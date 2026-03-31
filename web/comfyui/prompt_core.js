@@ -1,0 +1,217 @@
+// 文件路径：web/comfyui/prompt_core.js
+import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
+import { PromptAPI } from "./prompt_api.js";
+
+// === 1. 强防御性全局状态初始化 ===
+window.PM_Global = window.PM_Global || { state: {}, utils: {}, ui: {} };
+
+// 【核心修复】：使用 Object.assign 注入属性，绝不覆盖（替换）原有对象引用！
+Object.assign(window.PM_Global.state, {
+    localDB: { models: { main_models: {} }, settings: {}, contexts: {}, images: {} },
+    currentModelId: null,
+    currentModeId: null,
+    isBatchMode: false,
+    batchSelection: new Set(),
+    searchQuery: "",
+    searchScope: "mode",
+    currentAppendTarget: null,
+    collapsedCategories: new Set(),
+    currentActiveWidget: null,
+    activeModals: [],
+    currentManageCtx: null,
+    currentComboEditIdx: null,
+    currentEditCardTarget: null
+});
+
+const STATE = window.PM_Global.state;
+
+// === 2. 全局基础工具函数 ===
+// 【核心修复】：同样使用 Object.assign 动态注入方法
+Object.assign(window.PM_Global.utils, {
+    cyrb53(str, seed = 0) {
+        let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+        for (let i = 0, ch; i < str.length; i++) {
+            ch = str.charCodeAt(i);
+            h1 = Math.imul(h1 ^ ch, 2654435761);
+            h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1>>>16), 2246822507) ^ Math.imul(h2 ^ (h2>>>13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2>>>16), 2246822507) ^ Math.imul(h1 ^ (h1>>>13), 3266489909);
+        return (4294967296 * (2097151 & h2) + (h1>>>0)).toString(16);
+    },
+
+    parsePromptText(text) {
+        if (!text) return [];
+        return text.split(',').map(s => s.trim()).filter(s => s).map(p => {
+            let tag = p, weight = 1.0;
+            const match = p.match(/^\((.+):([\d.]+)\)$/);
+            if (match) { tag = match[1]; weight = parseFloat(match[2]); }
+            return { original: p, tag, weight, enabled: true };
+        });
+    },
+
+    buildPromptText(list) {
+        return list.filter(p => p.enabled !== false).map(p => {
+            return (p.weight !== 1.0) ? `(${p.tag}:${p.weight.toFixed(1)})` : p.tag;
+        }).join(', ');
+    },
+
+    reorderObjectKeys(obj, sourceKey, targetKey) {
+        if (sourceKey === targetKey) return obj;
+        const newObj = {};
+        for (const k of Object.keys(obj)) {
+            if (k === sourceKey) continue;
+            if (k === targetKey) newObj[sourceKey] = obj[sourceKey];
+            newObj[k] = obj[k];
+        }
+        if (!newObj.hasOwnProperty(sourceKey)) newObj[sourceKey] = obj[sourceKey];
+        return newObj;
+    },
+
+    async getAndMigrateDB() {
+        let db = await PromptAPI.getDB();
+        let needSave = false;
+        if (db.contexts) {
+            for (const ctx in db.contexts) {
+                const metadata = db.contexts[ctx].metadata;
+                if (metadata) {
+                    for (const item in metadata) {
+                        if (metadata[item].remark) {
+                            const remarkVal = metadata[item].remark.trim();
+                            if (remarkVal) {
+                                if (!metadata[item].tags) metadata[item].tags = [];
+                                if (!metadata[item].tags.includes(remarkVal)) metadata[item].tags.push(remarkVal);
+                            }
+                            delete metadata[item].remark;
+                            needSave = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (needSave) await PromptAPI.saveDB(db);
+        return db;
+    },
+
+    async urlToBase64(url) {
+        const response = await fetch(url);
+        const blob = await response.blob();
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    },
+
+    compressImage(file, maxWidth, quality) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader(); reader.readAsDataURL(file);
+            reader.onload = (e) => {
+                const img = new Image(); img.src = e.target.result;
+                img.onload = () => {
+                    const canvas = document.createElement("canvas"); 
+                    let w = img.width, h = img.height;
+                    if (w > maxWidth) { h = Math.round(h * (maxWidth / w)); w = maxWidth; }
+                    canvas.width = w; canvas.height = h;
+                    const ctx = canvas.getContext("2d"); ctx.drawImage(img, 0, 0, w, h);
+                    resolve(canvas.toDataURL("image/jpeg", quality));
+                };
+                img.onerror = reject;
+            };
+            reader.onerror = reject;
+        });
+    },
+
+    syncImportNodeWidgets() {
+        if (!app.graph) return;
+        let choices = [];
+        const models = STATE.localDB.models?.main_models || {};
+        for (const [model_id, model_data] of Object.entries(models)) {
+            const m_name = model_data.name || model_id;
+            const cats = {};
+            (model_data.categories || []).forEach(c => cats[c.id] = c.name);
+            for (const [mode_id, mode_data] of Object.entries(model_data.modes || {})) {
+                const c_name = cats[mode_data.group || "custom"] || "未分类";
+                const md_name = mode_data.name || mode_id;
+                choices.push(`[${m_name}] ${c_name} = ${md_name}`);
+            }
+        }
+        if (choices.length === 0) choices = ["未建任何模式_请先创建"];
+
+        let comboChoices = [], groupChoices = [];
+        for (const [ctx_id, ctx_data] of Object.entries(STATE.localDB.contexts || {})) {
+            (ctx_data.combos || []).forEach(c => {
+                const combo_name = c.name || "未命名组合";
+                if (!comboChoices.includes(combo_name)) comboChoices.push(combo_name);
+            });
+            (ctx_data.groups || []).forEach(g => {
+                groupChoices.push(`${ctx_id} || ${g.name || "未命名分组"}`);
+            });
+        }
+        if (comboChoices.length === 0) comboChoices = ["无可用组合_请先创建"];
+        if (groupChoices.length === 0) groupChoices = ["无可用分组_请先创建"];
+
+        const compRate = STATE.localDB.settings?.compress_rate ?? 0.85;
+        const maxWidth = STATE.localDB.settings?.max_width ?? 900;
+
+        app.graph._nodes.filter(n => n.type === "PromptImportNode").forEach(node => {
+            const widget = node.widgets?.find(w => w.name === "save_target" || w.name === "目标存储模式");
+            if (widget) { widget.options.values = choices; if (!choices.includes(widget.value)) widget.value = choices[0]; }
+            const compWidget = node.widgets?.find(w => w.name === "compress_rate" || w.name === "压缩率");
+            if (compWidget) compWidget.value = compRate;
+            const widthWidget = node.widgets?.find(w => w.name === "最大宽度");
+            if (widthWidget) widthWidget.value = maxWidth;
+        });
+
+        app.graph._nodes.filter(n => n.type === "PromptComboLoaderNode").forEach(node => {
+            const widget = node.widgets?.find(w => w.name === "选择组合");
+            if (widget) { widget.options.values = comboChoices; if (!comboChoices.includes(widget.value)) widget.value = comboChoices[0]; }
+        });
+
+        app.graph._nodes.filter(n => n.type === "PromptGroupRandomizerNode").forEach(node => {
+            const widget = node.widgets?.find(w => w.name === "选择分组");
+            if (widget) { widget.options.values = groupChoices; if (!groupChoices.includes(widget.value)) widget.value = groupChoices[0]; }
+        });
+    }
+});
+
+// === 3. 全局模态框与进度条管理器 ===
+window.pmShowModal = function(id) {
+    const el = document.getElementById(id);
+    if (el && el.style.display !== 'flex') {
+        el.style.display = 'flex';
+        if (!STATE.activeModals.includes(id)) STATE.activeModals.push(id);
+    }
+};
+
+window.pmHideModal = function(id) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+    STATE.activeModals = STATE.activeModals.filter(m => m !== id);
+};
+
+Object.assign(window.PM_Global.ui, {
+    updateProgress(title, text, percent = null) {
+        const overlay = document.getElementById("pm-progress-overlay");
+        if (overlay) {
+            window.pmShowModal("pm-progress-overlay");
+            document.getElementById("pm-progress-title").innerText = title || "处理中...";
+            document.getElementById("pm-progress-text").innerText = text || "请稍候";
+            document.getElementById("pm-progress-fill").style.width = percent !== null ? percent + "%" : "100%";
+        }
+    },
+    hideProgress() {
+        window.pmHideModal("pm-progress-overlay");
+    }
+});
+
+// === 4. 全局生命周期监听 ===
+api.addEventListener("executed", async (e) => {
+    STATE.localDB = await window.PM_Global.utils.getAndMigrateDB();
+    app.graph._nodes.forEach(n => {
+        if (n.type === "PromptViewerNode" && n.forceRefreshViewer) n.forceRefreshViewer();
+    });
+    window.PM_Global.utils.syncImportNodeWidgets();
+});

@@ -53,6 +53,9 @@ class PromptBrowserNode:
         return {
             "required": {
                 "输入prompt": ("STRING", {"multiline": True, "default": ""}),
+                # === 新增：自动随机控制控件 ===
+                "自动随机抽取": ("BOOLEAN", {"default": False}),
+                "抽取数量": ("INT", {"default": 3, "min": 1, "max": 100, "step": 1}),
             }
         }
     RETURN_TYPES = ("STRING",)
@@ -60,7 +63,8 @@ class PromptBrowserNode:
     FUNCTION = "process"
     CATEGORY = "Prompt Manager"
 
-    def process(self, 输入prompt):
+    def process(self, 输入prompt, 自动随机抽取, 抽取数量):
+        # Python端仅做透传，抽取逻辑和自动刷新都交由前端拦截处理
         return (输入prompt,)
 
 # ==========================================
@@ -93,7 +97,9 @@ class PromptImportNode:
             "required": {
                 "图像": ("IMAGE",),
                 "prompt字符串": ("STRING", {"forceInput": True}),
+                "导入到模式": ("BOOLEAN", {"default": True}),
                 "目标存储模式": (get_target_contexts(), ),
+                "导入到组合": ("BOOLEAN", {"default": False}),
                 "压缩率": ("FLOAT", {"default": 0.85, "min": 0.1, "max": 1.0, "step": 0.01}),
                 "最大宽度": ("INT", {"default": 900, "min": 100, "max": 4096, "step": 10}),
             }
@@ -103,13 +109,19 @@ class PromptImportNode:
     OUTPUT_NODE = True
     CATEGORY = "Prompt Manager"
 
-    def save_images(self, 图像, prompt字符串, 目标存储模式, 压缩率, 最大宽度):
-        if 目标存储模式 == "未建任何模式_请先创建" or not 目标存储模式:
-            raise ValueError("【Prompt管理器报错】无法导入！请先打开Prompt浏览器节点，至少创建一个模型、分类和模式！")
+    def save_images(self, 图像, prompt字符串, 导入到模式, 目标存储模式, 导入到组合, 压缩率, 最大宽度):
+        if 导入到模式 and 导入到组合:
+            raise ValueError("【Prompt管理器报错】'导入到模式' 和 '导入到组合' 不能同时开启！")
+        if not 导入到模式 and not 导入到组合:
+            return () # 两个都关闭则直接跳过导入
 
         safe_name = prompt字符串.strip()
         if not safe_name: return ()
-            
+        
+        if 导入到模式:
+            if 目标存储模式 == "未建任何模式_请先创建" or not 目标存储模式:
+                raise ValueError("【Prompt管理器报错】无法导入到模式！请先打开Prompt浏览器节点，至少创建一个模型、分类和模式！")
+
         file_safe_name = "".join([c for c in safe_name if c.isalnum()]).rstrip()[:20]
 
         if os.path.exists(DB_FILE):
@@ -132,7 +144,8 @@ class PromptImportNode:
             if target_ctx: break
         
         if not target_ctx:
-            raise ValueError(f"【Prompt管理器报错】找不到目标模式: {目标存储模式}，可能已被删除，请刷新网页或重新选择！")
+            # 即使是单独导入到组合，我们也需要挂载在一个上下文里，兜底分配
+            target_ctx = list(db_data.get("contexts", {}).keys())[0] if db_data.get("contexts") else "custom_custom"
             
         ctx = target_ctx
 
@@ -142,20 +155,13 @@ class PromptImportNode:
             db_data["contexts"][ctx] = {"items": [], "metadata": {}, "cart": [], "groups": [], "combos": []}
             
         ctx_data = db_data["contexts"][ctx]
-        if safe_name not in ctx_data["items"]: ctx_data["items"].append(safe_name)
-        if safe_name not in ctx_data["metadata"]: ctx_data["metadata"][safe_name] = {"tags": []}
-            
-        img_key = f"{ctx}_{safe_name}"
-        if img_key not in db_data["images"]: db_data["images"][img_key] = []
-            
         target_dir = os.path.join(DATA_DIR, ctx)
         os.makedirs(target_dir, exist_ok=True)
         
+        saved_urls = []
         for i, image_tensor in enumerate(图像):
             img_np = 255. * image_tensor.cpu().numpy()
             img_pil = Image.fromarray(np.clip(img_np, 0, 255).astype(np.uint8))
-            
-            # 物理层面裁剪宽度
             w, h = img_pil.size
             if w > 最大宽度:
                 new_h = int(h * (最大宽度 / w))
@@ -163,19 +169,46 @@ class PromptImportNode:
             
             img_name = f"gen_{file_safe_name}_{torch.randint(0, 100000, (1,)).item()}.jpg"
             img_path = os.path.join(target_dir, img_name)
+            img_pil.save(img_path, format="JPEG", quality=int(压缩率 * 100))
+            saved_urls.append(f"/prompt_data/{ctx}/{img_name}")
+
+        # 逻辑一：导入到模式
+        if 导入到模式:
+            if safe_name not in ctx_data["items"]: ctx_data["items"].append(safe_name)
+            if safe_name not in ctx_data["metadata"]: ctx_data["metadata"][safe_name] = {"tags": []}
+                
+            img_key = f"{ctx}_{safe_name}"
+            if img_key not in db_data["images"]: db_data["images"][img_key] = []
+            db_data["images"][img_key].extend(saved_urls)
+            ctx_data["metadata"][safe_name]["imgCount"] = len(db_data["images"][img_key])
+            print(f"[Prompt Manager] 导入模式成功: {safe_name}")
+
+        # 逻辑二：导入到组合
+        if 导入到组合:
+            if "combos" not in ctx_data: ctx_data["combos"] = []
+            parts = [p.strip() for p in safe_name.split(',') if p.strip()]
+            elements = []
+            for p in parts:
+                tag = p
+                weight = 1.0
+                match = re.match(r'^\((.+):([\d.]+)\)$', p)
+                if match:
+                    tag = match.group(1)
+                    weight = float(match.group(2))
+                elements.append({"tag": tag, "weight": weight})
             
-            quality_val = int(压缩率 * 100)
-            img_pil.save(img_path, format="JPEG", quality=quality_val)
-            
-            url = f"/prompt_data/{ctx}/{img_name}"
-            db_data["images"][img_key].append(url)
-            
-        ctx_data["metadata"][safe_name]["imgCount"] = len(db_data["images"][img_key])
+            combo_name = f"自动组合_{int(time.time())}"
+            combo_img = saved_urls[0] if saved_urls else None
+            ctx_data["combos"].insert(0, {
+                "name": combo_name,
+                "elements": elements,
+                "image": combo_img
+            })
+            print(f"[Prompt Manager] 导入组合成功: {combo_name}")
         
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(db_data, f, ensure_ascii=False, indent=2)
             
-        print(f"[Prompt Manager] 导入成功: 目标 [{目标存储模式}] -> {safe_name}")
         return ()
 
 # ==========================================
