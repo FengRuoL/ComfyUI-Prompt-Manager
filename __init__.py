@@ -10,6 +10,7 @@ import time
 import zipfile
 import server
 from aiohttp import web
+import re
 
 NODE_ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB_DIRECTORY = os.path.join(NODE_ROOT, "web", "comfyui")
@@ -53,7 +54,6 @@ class PromptBrowserNode:
         return {
             "required": {
                 "输入prompt": ("STRING", {"multiline": True, "default": ""}),
-                # === 新增：自动随机控制控件 ===
                 "自动随机抽取": ("BOOLEAN", {"default": False}),
                 "抽取数量": ("INT", {"default": 3, "min": 1, "max": 100, "step": 1}),
             }
@@ -113,7 +113,7 @@ class PromptImportNode:
         if 导入到模式 and 导入到组合:
             raise ValueError("【Prompt管理器报错】'导入到模式' 和 '导入到组合' 不能同时开启！")
         if not 导入到模式 and not 导入到组合:
-            return () # 两个都关闭则直接跳过导入
+            return () 
 
         safe_name = prompt字符串.strip()
         if not safe_name: return ()
@@ -144,7 +144,6 @@ class PromptImportNode:
             if target_ctx: break
         
         if not target_ctx:
-            # 即使是单独导入到组合，我们也需要挂载在一个上下文里，兜底分配
             target_ctx = list(db_data.get("contexts", {}).keys())[0] if db_data.get("contexts") else "custom_custom"
             
         ctx = target_ctx
@@ -172,7 +171,6 @@ class PromptImportNode:
             img_pil.save(img_path, format="JPEG", quality=int(压缩率 * 100))
             saved_urls.append(f"/prompt_data/{ctx}/{img_name}")
 
-        # 逻辑一：导入到模式
         if 导入到模式:
             if safe_name not in ctx_data["items"]: ctx_data["items"].append(safe_name)
             if safe_name not in ctx_data["metadata"]: ctx_data["metadata"][safe_name] = {"tags": []}
@@ -183,7 +181,6 @@ class PromptImportNode:
             ctx_data["metadata"][safe_name]["imgCount"] = len(db_data["images"][img_key])
             print(f"[Prompt Manager] 导入模式成功: {safe_name}")
 
-        # 逻辑二：导入到组合
         if 导入到组合:
             if "combos" not in ctx_data: ctx_data["combos"] = []
             parts = [p.strip() for p in safe_name.split(',') if p.strip()]
@@ -232,7 +229,7 @@ def get_combo_choices():
     return choices
 
 # ==========================================
-# 节点 4：Prompt组合预设加载器 (含图像输出)
+# 节点 4：Prompt组合预设加载器
 # ==========================================
 class PromptComboLoaderNode:
     @classmethod
@@ -249,7 +246,6 @@ class PromptComboLoaderNode:
 
     def load_combo(self, 选择组合):
         prompt_str = ""
-        # 默认返回一个空的黑色图像占位符，防止如果没图片时 ComfyUI 报错
         img_tensor = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
 
         if 选择组合 == "无可用组合_请先创建":
@@ -262,7 +258,6 @@ class PromptComboLoaderNode:
                     for ctx_id, ctx_data in db.get("contexts", {}).items():
                         for c in ctx_data.get("combos", []):
                             if c.get("name") == 选择组合:
-                                # 1. 组装 Prompt
                                 elements = c.get("elements", [])
                                 parts = []
                                 for el in elements:
@@ -274,7 +269,6 @@ class PromptComboLoaderNode:
                                         parts.append(tag)
                                 prompt_str = ", ".join(parts)
                                 
-                                # 2. 读取并转换本地图片为 Tensor 传给工作流
                                 img_url = c.get("image")
                                 if img_url and img_url.startswith("/prompt_data/"):
                                     rel_path = img_url.replace("/prompt_data/", "")
@@ -306,11 +300,10 @@ class PromptPreviewNode:
     CATEGORY = "Prompt Manager"
 
     def preview(self, 图像):
-        # Python端仅做透传，无缝接入原生工作流。真正的无延迟预览交由 JS 端实时处理。
         return (图像,)
 
 # ==========================================
-# 辅助函数：动态读取数据库中的所有收藏分组
+# 辅助函数：动态读取数据库中的所有收藏分组 (升级极简版格式)
 # ==========================================
 def get_group_choices():
     choices = []
@@ -318,10 +311,16 @@ def get_group_choices():
         if os.path.exists(DB_FILE):
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 db = json.load(f)
+                models = db.get("models", {}).get("main_models", {})
                 for ctx_id, ctx_data in db.get("contexts", {}).items():
+                    model_id = ctx_id.split('_')[0]
+                    model_name = models.get(model_id, {}).get("name", model_id)
                     for group in ctx_data.get("groups", []):
                         g_name = group.get("name", "未命名分组")
-                        choices.append(f"{ctx_id} || {g_name}")
+                        # 仅合并输出 "模型名|分组名"
+                        choice_str = f"{model_name}|{g_name}"
+                        if choice_str not in choices:
+                            choices.append(choice_str)
     except:
         pass
     if not choices:
@@ -347,7 +346,6 @@ class PromptGroupRandomizerNode:
     CATEGORY = "Prompt Manager"
 
     def process(self, 选择分组, 抽取数量, 输入prompt):
-        # Python端仅做透传，抽取逻辑和列表UI均由前端节点处理
         return (输入prompt,)
 
 # ==========================================

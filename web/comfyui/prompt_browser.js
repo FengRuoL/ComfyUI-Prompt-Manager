@@ -537,7 +537,6 @@ function openNativeBrowser() {
 
         document.getElementById("pm-close-btn").onclick = closeNativeBrowser;
         
-        // 拖拽窗口
         let isDraggingWin = false, offsetX = 0, offsetY = 0;
         document.getElementById("pm-header").addEventListener("mousedown", (e) => {
             if (e.target.tagName.toLowerCase() === 'button') return;
@@ -978,7 +977,7 @@ function setupMarquee() {
     let isDrawing = false, startX = 0, startY = 0, selectionSnapshot = new Set(); window._isDraggingMarquee = false;
     main.addEventListener("mousedown", (e) => {
         if (!STATE.isBatchMode || e.target.closest('.pm-img-overlay') || e.target.closest('.pm-card-actions')) return;
-        e.preventDefault(); // 阻止浏览器默认拖拽选中文本行为
+        e.preventDefault(); 
         isDrawing = true; window._isDraggingMarquee = false;
         const rect = main.getBoundingClientRect(); startX = e.clientX - rect.left + main.scrollLeft; startY = e.clientY - rect.top + main.scrollTop;
         selectionSnapshot = new Set(STATE.batchSelection);
@@ -1030,8 +1029,6 @@ async function cleanupContextImages(ctx) {
 // === 5. 节点注册: PromptBrowserNode ===
 app.registerExtension({
     name: "PromptManager.BrowserNode",
-    
-    // 【新增 1】：在初始化阶段，劫持 ComfyUI 的点击生成按钮事件，实现“自动随机”
     setup() {
         const origQueuePrompt = app.queuePrompt;
         app.queuePrompt = async function(number, batchCount) {
@@ -1042,41 +1039,25 @@ app.registerExtension({
                     hasAutoRandom = browserNodes.some(node => node.widgets?.find(w => w.name === "自动随机抽取")?.value);
                 }
 
-                // 如果开启了“自动随机抽取”
                 if (hasAutoRandom) {
-                    // 获取用户设定的批次数量 (如果没设定则默认为1)
                     let count = number || 1; 
                     let lastResult;
-                    
-                    // 将原本的一次性批量提交，拆解为多次单次提交
                     for (let i = 0; i < count; i++) {
-                        
-                        // 1. 在每一次推入队列之前，先触发一次随机抽卡
                         const browserNodes = app.graph._nodes.filter(n => n.type === "PromptBrowserNode");
                         for (const node of browserNodes) {
                             const autoWidget = node.widgets?.find(w => w.name === "自动随机抽取");
                             if (autoWidget && autoWidget.value) {
-                                // 匹配改名后的“随机抽取”按钮
                                 const randomBtn = node.widgets?.find(w => w.name === "random" || w.name === "随机抽取");
-                                if (randomBtn && randomBtn.callback) {
-                                    await randomBtn.callback(); // 执行抽取并替换文本
-                                }
+                                if (randomBtn && randomBtn.callback) await randomBtn.callback();
                             }
                         }
-                        
-                        // 2. 调用原生的 queuePrompt，但是强制把批次数量设为 1
-                        // 这样 ComfyUI 会抓取刚刚抽取的最新 Prompt 送入队列，且自带的Seed(种子)递增机制依然会正常生效
                         lastResult = await origQueuePrompt.call(this, 1, batchCount);
                     }
-                    
-                    // 循环推入完毕，直接返回
                     return lastResult;
                 }
             } catch (e) {
                 console.error("【Prompt管理器】自动随机抽卡发生错误:", e);
             }
-            
-            // 如果没有开启自动随机，走原来的正常流程
             return await origQueuePrompt.apply(this, arguments);
         };
     },
@@ -1153,7 +1134,6 @@ app.registerExtension({
                     openNativeBrowser();
                 });
 
-                // 将原“随机挑选”改名为“随机抽取”
                 const btnRandom = this.addWidget("button", "随机抽取", "random", async () => {
                     if (Object.keys(STATE.localDB.contexts || {}).length === 0) STATE.localDB = await UTILS.getAndMigrateDB();
                     if (!STATE.currentModelId) STATE.currentModelId = Object.keys(STATE.localDB.models?.main_models || {})[0];
@@ -1173,28 +1153,22 @@ app.registerExtension({
                     promptWidget.value = UTILS.buildPromptText(newParsed); app.graph.setDirtyCanvas(true); renderList();
                 });
 
-                // === 核心修改：重新排布 Widget 的顺序，将控制栏移动到最上方 ===
+                // === 强制规定控件的完美展示顺序 ===
                 const autoRandomWidget = this.widgets.find(w => w.name === "自动随机抽取");
                 const countWidget = this.widgets.find(w => w.name === "抽取数量");
                 const htmlListWidget = this.widgets.find(w => w.name === "prompt_list");
 
-                // 定义期望的顺序（从上往下排）
                 const desiredOrder = [
                     btnOpen,           // 第一：打开浏览器按钮
-                    autoRandomWidget,  // 第二：是否开启自动随机（控制开关）
-                    countWidget,       // 第三：数量设定
-                    btnRandom,         // 第四：手动点击抽取
+                    btnRandom,         // 第二：手动点击抽取
+                    autoRandomWidget,  // 第三：是否开启自动随机（控制开关）
+                    countWidget,       // 第四：数量设定
                     promptWidget,      // 第五：超大文本框
                     htmlListWidget     // 第六：自定义可视化列表
-                ].filter(Boolean);     // 去除万一找不到的 undefined 值
+                ].filter(Boolean);     
 
-                // 将不在列表中的其他可能控件保留在后面
                 const otherWidgets = this.widgets.filter(w => !desiredOrder.includes(w));
-                
-                // 覆盖当前控件数组强制应用顺序
                 this.widgets = [...desiredOrder, ...otherWidgets];
-                
-                // 调整一下默认高度，让所有组件显示得更舒展
                 this.setSize([400, 420]);
             };
         }

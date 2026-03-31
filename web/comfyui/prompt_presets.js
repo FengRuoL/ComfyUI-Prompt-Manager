@@ -16,7 +16,7 @@ function getCtxData(ctx) {
 }
 
 // ==========================================
-// 1. 收藏夹分组管理 API (挂载在 window)
+// 1. 收藏夹分组管理 API
 // ==========================================
 window.PM_Global.ui.openGroupsModal = function() {
     const ctx = `${STATE.currentModelId}_${STATE.currentModeId}`;
@@ -107,19 +107,55 @@ window.PM_Global.ui.openGroupDetail = function(idx, ctx) {
     if (g.items.length === 0) grid.innerHTML = `<div style="color:#555; grid-column:1/-1;">分组内空空如也。</div>`;
     else grid.innerHTML = '';
     
+    let activePrompts = [];
+    if (STATE.currentActiveWidget && STATE.currentActiveWidget.value) {
+        activePrompts = UTILS.parsePromptText(STATE.currentActiveWidget.value).map(p => p.tag);
+    }
+    
     g.items.forEach(item => {
         const imgList = STATE.localDB.images[`${ctx}_${item}`] || [];
-        const card = document.createElement("div"); card.className = "pm-card";
-        let imgHtml = imgList.length > 0 ? `<img src="${imgList[0]}" onclick="document.getElementById('pm-viewer-img').src='${imgList[0]}'; pmShowModal('pm-image-viewer');">` : `<div class="pm-no-img">暂无图片</div>`;
+        const card = document.createElement("div"); card.className = "pm-card pm-selectable-card";
+        
+        if (activePrompts.includes(item)) {
+            card.classList.add("in-prompt");
+        }
+        
+        let imgHtml = imgList.length > 0 ? `<img src="${imgList[0]}">` : `<div class="pm-no-img">暂无图片</div>`;
         card.innerHTML = `
             <div class="pm-card-img-wrap" style="cursor:pointer;">
                 ${imgHtml}
-                <div class="pm-img-overlay" style="display:flex;">
-                    <button class="pm-text-btn danger" style="margin:auto;" onclick="PM_Global.ui.removeCardFromGroup(${idx}, '${item}', '${ctx}')">移出</button>
-                </div>
             </div>
             <div class="pm-card-title">${item}</div>
+            <div class="pm-card-actions" style="justify-content:center; padding-top:6px;">
+                <button class="pm-text-btn danger" onclick="event.stopPropagation(); PM_Global.ui.removeCardFromGroup(${idx}, '${item}', '${ctx}')">移出该分组</button>
+            </div>
         `;
+        
+        if (imgList.length > 0) {
+            const imgEl = card.querySelector('img');
+            imgEl.onclick = (e) => {
+                e.stopPropagation();
+                document.getElementById('pm-viewer-img').src = imgList[0];
+                window.pmShowModal('pm-image-viewer');
+            };
+        }
+
+        card.onclick = () => {
+            if (!STATE.currentActiveWidget) return alert("当前未绑定激活的 Prompt 浏览器节点！请先打开某个节点的浏览器。");
+            let p = UTILS.parsePromptText(STATE.currentActiveWidget.value);
+            const pIdx = p.findIndex(x => x.tag === item);
+            if (pIdx !== -1) {
+                p.splice(pIdx, 1);
+                card.classList.remove("in-prompt");
+            } else {
+                p.push({ original: item, tag: item, weight: 1.0, enabled: true });
+                card.classList.add("in-prompt");
+            }
+            STATE.currentActiveWidget.value = UTILS.buildPromptText(p);
+            app.graph.setDirtyCanvas(true);
+            if (window.PM_Global.ui.renderGrid) window.PM_Global.ui.renderGrid();
+        };
+
         grid.appendChild(card);
     });
     window.pmShowModal("pm-group-detail-modal");
@@ -164,7 +200,7 @@ window.PM_Global.ui.importGroups = function(e) {
 };
 
 // ==========================================
-// 2. 组合预设管理 API (挂载在 window)
+// 2. 组合预设管理 API
 // ==========================================
 window.PM_Global.ui.openCombosModal = function() {
     const ctx = `${STATE.currentModelId}_${STATE.currentModeId}`;
@@ -462,11 +498,27 @@ app.registerExtension({
                     if (Object.keys(STATE.localDB.contexts || {}).length === 0) STATE.localDB = await UTILS.getAndMigrateDB();
                     const groupWidget = this.widgets.find(w => w.name === "选择分组");
                     const countWidget = this.widgets.find(w => w.name === "抽取数量");
-                    if (!groupWidget || !countWidget || groupWidget.value === "无可用分组_请先创建" || !groupWidget.value.includes(" || ")) return alert("请先创建收藏分组并选择！");
+                    
+                    if (!groupWidget || !countWidget || groupWidget.value === "无可用分组_请先创建") return alert("请先创建收藏分组并选择！");
+                    
+                    // 容错机制：防止直接读取上古时代的旧数据格式报错
+                    const parts = groupWidget.value.split("|");
+                    if (parts.length < 2) return alert("分组格式无法识别！请重新下拉选择该分组刷新数据格式。");
+                    
+                    const m_name = parts[0];
+                    const g_name = parts[1];
+                    let targetGroup = null;
+                    
+                    for (const ctx_id of Object.keys(STATE.localDB.contexts)) {
+                        const modelId = ctx_id.split('_')[0];
+                        const modelName = STATE.localDB.models?.main_models?.[modelId]?.name || modelId;
+                        if (modelName === m_name) {
+                            const groups = STATE.localDB.contexts[ctx_id]?.groups || [];
+                            targetGroup = groups.find(g => g.name === g_name);
+                            if (targetGroup) break;
+                        }
+                    }
 
-                    const [ctx_id, g_name] = groupWidget.value.split(" || ");
-                    const groups = STATE.localDB.contexts?.[ctx_id]?.groups || [];
-                    const targetGroup = groups.find(g => g.name === g_name);
                     if (!targetGroup || !targetGroup.items || targetGroup.items.length === 0) return alert(`分组 [${g_name}] 内没有任何卡片，无法抽取！`);
 
                     const count = Math.min(targetGroup.items.length, countWidget.value);
