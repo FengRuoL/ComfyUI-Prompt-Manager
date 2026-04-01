@@ -1,4 +1,3 @@
-// 文件路径：web/comfyui/prompt_presets.js
 import { app } from "../../scripts/app.js";
 import { PromptAPI } from "./prompt_api.js";
 
@@ -7,7 +6,6 @@ const STATE = window.PM_Global.state;
 const UTILS = window.PM_Global.utils;
 const UI = window.PM_Global.ui;
 
-// --- 工具：获取当前操作上下文的数据引用 ---
 function getCtxData(ctx) {
     if (!STATE.localDB.contexts[ctx]) STATE.localDB.contexts[ctx] = { items: [], metadata: {}, cart: [], groups: [], combos: [] };
     if (!STATE.localDB.contexts[ctx].groups) STATE.localDB.contexts[ctx].groups = [];
@@ -451,7 +449,9 @@ app.registerExtension({
 
                 const renderList = () => {
                     listBody.innerHTML = '';
-                    if (!isUpdatingFromList) cachedList = UTILS.parsePromptText(promptWidget.value);
+                    if (!isUpdatingFromList && UTILS && UTILS.parsePromptText) {
+                        cachedList = UTILS.parsePromptText(promptWidget.value || "");
+                    }
                     if (cachedList.length === 0) { listBody.innerHTML = '<div style="color:#555; font-size:11px; text-align:center; padding:10px;">点击按钮抽取盲盒</div>'; return; }
 
                     cachedList.forEach((item, index) => {
@@ -494,16 +494,69 @@ app.registerExtension({
                 promptWidget.callback = function() { if (originalCallback) originalCallback.apply(this, arguments); if (!isUpdatingFromList) renderList(); };
                 renderList();
 
+                // === 拦截器注入：自动清洗外部脏数据 ===
+                const groupWidget = this.widgets.find(w => w.name === "选择分组");
+                if (groupWidget) {
+                    if (groupWidget.options) {
+                        let realValues = groupWidget.options.values || [];
+                        Object.defineProperty(groupWidget.options, 'values', {
+                            get: function() { return realValues; },
+                            set: function(newVals) {
+                                if (!newVals || !Array.isArray(newVals)) {
+                                    realValues = newVals;
+                                    return;
+                                }
+                                const models = STATE.localDB?.models?.main_models || {};
+                                const cleanedVals = newVals.map(v => {
+                                    if (typeof v === 'string' && v.includes(' ||')) {
+                                        const parts = v.split(' ||');
+                                        const oldCtx = parts[0];
+                                        const gName = parts[1] ? parts[1].trim() : "";
+                                        const oldMId = oldCtx.split('_')[0];
+                                        const mName = models[oldMId]?.name || oldMId;
+                                        return `${mName}|${gName}`;
+                                    }
+                                    return v;
+                                });
+                                realValues = [...new Set(cleanedVals)];
+                            },
+                            configurable: true
+                        });
+                    }
+
+                    let realValue = groupWidget.value;
+                    Object.defineProperty(groupWidget, 'value', {
+                        get: function() { return realValue; },
+                        set: function(v) {
+                            if (typeof v === 'string' && v.includes(' ||')) {
+                                const parts = v.split(' ||');
+                                const oldCtx = parts[0];
+                                const gName = parts[1] ? parts[1].trim() : "";
+                                const oldMId = oldCtx.split('_')[0];
+                                const models = STATE.localDB?.models?.main_models || {};
+                                const mName = models[oldMId]?.name || oldMId;
+                                realValue = `${mName}|${gName}`;
+                            } else {
+                                realValue = v;
+                            }
+                        },
+                        configurable: true
+                    });
+
+                    // 触发数据清洗
+                    if (groupWidget.options && groupWidget.options.values) groupWidget.options.values = groupWidget.options.values;
+                    if (groupWidget.value) groupWidget.value = groupWidget.value;
+                }
+
                 this.addWidget("button", "抽取盲盒", "draw_blind_box", async () => {
                     if (Object.keys(STATE.localDB.contexts || {}).length === 0) STATE.localDB = await UTILS.getAndMigrateDB();
-                    const groupWidget = this.widgets.find(w => w.name === "选择分组");
+                    const currentGroupWidget = this.widgets.find(w => w.name === "选择分组");
                     const countWidget = this.widgets.find(w => w.name === "抽取数量");
                     
-                    if (!groupWidget || !countWidget || groupWidget.value === "无可用分组_请先创建") return alert("请先创建收藏分组并选择！");
+                    if (!currentGroupWidget || !countWidget || currentGroupWidget.value === "无可用分组_请先创建") return alert("请先创建收藏分组并选择！");
                     
-                    // 容错机制：防止直接读取上古时代的旧数据格式报错
-                    const parts = groupWidget.value.split("|");
-                    if (parts.length < 2) return alert("分组格式无法识别！请重新下拉选择该分组刷新数据格式。");
+                    const parts = currentGroupWidget.value.split("|");
+                    if (parts.length < 2) return alert("分组格式无法识别！请尝试重新下拉选择该分组刷新数据。");
                     
                     const m_name = parts[0];
                     const g_name = parts[1];
