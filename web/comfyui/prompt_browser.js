@@ -114,34 +114,54 @@ window.executeImportFinal = async function() {
         for (let oldCtx of Object.keys(data.contexts)) {
             let targetCtx = oldCtx;
             if (targetStrategy === 'current_tab') {
-                let oldModeId = oldCtx.includes('_') ? oldCtx.substring(oldCtx.indexOf('_') + 1) : oldCtx;
+                let oldModeId = oldCtx;
+                if (data.models && data.models.main_models) {
+                    const knownModelIds = Object.keys(data.models.main_models).sort((a,b) => b.length - a.length);
+                    for (const knownId of knownModelIds) {
+                        if (oldCtx.startsWith(knownId + '_')) {
+                            oldModeId = oldCtx.substring(knownId.length + 1);
+                            break;
+                        }
+                    }
+                } else {
+                    const firstUnder = oldCtx.indexOf('_');
+                    if (firstUnder > -1) oldModeId = oldCtx.substring(firstUnder + 1);
+                }
                 targetCtx = `${STATE.currentModelId}_${oldModeId}`;
-            } else if (targetStrategy === 'current_mode') targetCtx = `${STATE.currentModelId}_${STATE.currentModeId}`;
+            } else if (targetStrategy === 'current_mode') {
+                targetCtx = `${STATE.currentModelId}_${STATE.currentModeId}`;
+            }
             ctxMapping[oldCtx] = targetCtx;
         }
 
         if (data.images) {
             UI.updateProgress("处理图片...", "转换并分离路径...");
-            for (const [imgKey, imgArray] of Object.entries(data.images)) {
-                let newImgUrls = []; 
-                const firstUnder = imgKey.indexOf('_');
-                const oldCtx = firstUnder > -1 ? imgKey.substring(0, firstUnder) : `${STATE.currentModelId}_${STATE.currentModeId}`;
-                const itemName = firstUnder > -1 ? imgKey.substring(firstUnder + 1) : imgKey;
-                const safeName = (itemName || "img").replace(/[^a-zA-Z0-9]/g, '');
-                const realTargetCtx = ctxMapping[oldCtx] || oldCtx;
-
-                for (let i = 0; i < imgArray.length; i++) {
-                    let imgData = imgArray[i];
-                    if (imgData.startsWith('/prompt_data/') && !imgData.includes(`/${realTargetCtx}/`)) {
-                        try { imgData = await UTILS.urlToBase64(imgData); } catch(e) {}
+            let newImagesMap = {};
+            for (let oldCtx of Object.keys(data.contexts)) {
+                const targetCtx = ctxMapping[oldCtx] || oldCtx;
+                for (const item of data.contexts[oldCtx].items) {
+                    const oldImgKey = `${oldCtx}_${item}`;
+                    const newImgKey = `${targetCtx}_${item}`;
+                    const safeName = (item || "img").replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '').substring(0, 20);
+                    
+                    if (data.images[oldImgKey] && data.images[oldImgKey].length > 0) {
+                        newImagesMap[newImgKey] = [];
+                        for (let i = 0; i < data.images[oldImgKey].length; i++) {
+                            let imgData = data.images[oldImgKey][i];
+                            if (imgData.startsWith('/prompt_data/') && !imgData.includes(`/${targetCtx}/`)) {
+                                try { imgData = await UTILS.urlToBase64(imgData); } catch(e) {}
+                            }
+                            if (imgData.startsWith('data:image/') || imgData.length > 1000) {
+                                const url = await PromptAPI.uploadImage(imgData, `import_${safeName}_${Date.now()}_${i}.jpg`, targetCtx);
+                                if (url) newImagesMap[newImgKey].push(url);
+                            } else {
+                                newImagesMap[newImgKey].push(imgData);
+                            }
+                        }
                     }
-                    if (imgData.startsWith('data:image/') || imgData.length > 1000) {
-                        const url = await PromptAPI.uploadImage(imgData, `import_${safeName}_${Date.now()}_${i}.jpg`, realTargetCtx);
-                        if (url) newImgUrls.push(url);
-                    } else newImgUrls.push(imgData);
                 }
-                data.images[imgKey] = newImgUrls;
             }
+            data.images = newImagesMap;
         }
         
         UI.updateProgress("合并配置...", "即将完成");
@@ -149,36 +169,95 @@ window.executeImportFinal = async function() {
         for (let oldCtx of Object.keys(data.contexts)) {
             const cData = data.contexts[oldCtx];
             const targetCtx = ctxMapping[oldCtx] || oldCtx;
+            const meta = STATE.pendingImportMeta[oldCtx] || {};
+            const modeName = meta.modeName || '导入模式';
+            const modelName = meta.modelName || '导入模型';
             
             if (targetStrategy === 'current_tab') {
-                let oldModeId = oldCtx.includes('_') ? oldCtx.substring(oldCtx.indexOf('_') + 1) : oldCtx;
+                let oldModeId = oldCtx;
+                if (data.models && data.models.main_models) {
+                    const knownModelIds = Object.keys(data.models.main_models).sort((a,b) => b.length - a.length);
+                    for (const knownId of knownModelIds) {
+                        if (oldCtx.startsWith(knownId + '_')) {
+                            oldModeId = oldCtx.substring(knownId.length + 1);
+                            break;
+                        }
+                    }
+                } else {
+                    const firstUnder = oldCtx.indexOf('_');
+                    if (firstUnder > -1) oldModeId = oldCtx.substring(firstUnder + 1);
+                }
+
                 if (!STATE.localDB.models.main_models[STATE.currentModelId].modes[oldModeId]) {
                     const catId = STATE.localDB.models.main_models[STATE.currentModelId].categories[0]?.id || 'custom';
-                    STATE.localDB.models.main_models[STATE.currentModelId].modes[oldModeId] = { name: oldModeId, group: catId };
+                    STATE.localDB.models.main_models[STATE.currentModelId].modes[oldModeId] = { name: modeName, group: catId };
                 }
             } else if (targetStrategy === 'original') {
                 if (targetCtx.includes('_')) {
-                    const parts = targetCtx.split('_'); const mId = parts[0]; const modId = parts.slice(1).join('_');
-                    if (!STATE.localDB.models.main_models[mId]) STATE.localDB.models.main_models[mId] = { name: mId, categories: [{id:'custom', name:'导入分类'}], modes: {} };
-                    if (!STATE.localDB.models.main_models[mId].modes[modId]) STATE.localDB.models.main_models[mId].modes[modId] = { name: modId, group: "custom" };
+                    let mId = targetCtx;
+                    let modId = targetCtx;
+                    if (data.models && data.models.main_models) {
+                        const knownModelIds = Object.keys(data.models.main_models).sort((a,b) => b.length - a.length);
+                        for (const knownId of knownModelIds) {
+                            if (targetCtx.startsWith(knownId + '_')) {
+                                mId = knownId;
+                                modId = targetCtx.substring(knownId.length + 1);
+                                break;
+                            }
+                        }
+                    } else {
+                        const firstUnder = targetCtx.indexOf('_');
+                        if (firstUnder > -1) {
+                            mId = targetCtx.substring(0, firstUnder);
+                            modId = targetCtx.substring(firstUnder + 1);
+                        }
+                    }
+
+                    if (!STATE.localDB.models.main_models[mId]) STATE.localDB.models.main_models[mId] = { name: modelName, categories: [{id:'custom', name:'导入分类'}], modes: {} };
+                    if (!STATE.localDB.models.main_models[mId].modes[modId]) STATE.localDB.models.main_models[mId].modes[modId] = { name: modeName, group: "custom" };
                 }
             }
+
             if (!STATE.localDB.contexts[targetCtx]) STATE.localDB.contexts[targetCtx] = { items: [], metadata: {} };
             const d = STATE.localDB.contexts[targetCtx];
-            if (!isMerge && !clearedCtxs.has(targetCtx)) { d.items = []; d.metadata = {}; clearedCtxs.add(targetCtx); }
+            if (!isMerge && !clearedCtxs.has(targetCtx)) { 
+                d.items = []; d.metadata = {}; 
+                d.groups = []; d.combos = [];
+                clearedCtxs.add(targetCtx); 
+            }
             
-            const newItems = cData.items.filter(i => !d.items.includes(i)); d.items.push(...newItems);
+            const newItems = cData.items.filter(i => !d.items.includes(i)); 
+            d.items.push(...newItems);
+            
             if (cData.metadata) {
                 for (const [k, v] of Object.entries(cData.metadata)) {
                     if (d.metadata[k]) d.metadata[k].tags = [...new Set([...(d.metadata[k].tags||[]), ...(v.tags||[])])];
                     else d.metadata[k] = v;
                 }
             }
+            
+            if (cData.groups) {
+                if (!d.groups) d.groups = [];
+                cData.groups.forEach(g => {
+                    let existingGroup = d.groups.find(x => x.name === g.name);
+                    if (existingGroup) existingGroup.items = [...new Set([...existingGroup.items, ...g.items])];
+                    else d.groups.push(JSON.parse(JSON.stringify(g)));
+                });
+            }
+            if (cData.combos) {
+                if (!d.combos) d.combos = [];
+                cData.combos.forEach(c => {
+                    let existingCombo = d.combos.find(x => x.name === c.name);
+                    if (existingCombo) { existingCombo.elements = c.elements; if(c.image) existingCombo.image = c.image; }
+                    else d.combos.push(JSON.parse(JSON.stringify(c)));
+                });
+            }
+
             for (const item of cData.items) {
-                const oldImgKey = `${oldCtx}_${item}`; const newImgKey = `${targetCtx}_${item}`;
-                if (data.images[oldImgKey] && data.images[oldImgKey].length > 0) {
+                const newImgKey = `${targetCtx}_${item}`;
+                if (data.images[newImgKey] && data.images[newImgKey].length > 0) {
                     if (!STATE.localDB.images[newImgKey]) STATE.localDB.images[newImgKey] = [];
-                    STATE.localDB.images[newImgKey].push(...data.images[oldImgKey]);
+                    STATE.localDB.images[newImgKey].push(...data.images[newImgKey]);
                     STATE.localDB.images[newImgKey] = [...new Set(STATE.localDB.images[newImgKey])];
                 }
             }
@@ -238,6 +317,89 @@ window.PM_Global.ui.executeBatchEdit = async function() {
     window.pmHideModal('pm-batch-edit-modal');
     window.exitBatchMode();
     alert("批量操作已成功应用！");
+};
+
+window.PM_Global.ui.executeExport = function() {
+    const scope = document.getElementById("pm-export-scope").value;
+    const includeImg = document.getElementById("pm-export-img-check").checked;
+    
+    let exportData = {
+        type: "prompt_manager_export",
+        scope: scope,
+        models: { main_models: {} },
+        contexts: {},
+        images: {}
+    };
+
+    let targetCtxs = [];
+    const currentModelId = STATE.currentModelId;
+    const currentModeId = STATE.currentModeId;
+    const modelData = STATE.localDB.models.main_models[currentModelId];
+
+    if (scope === "all") {
+        exportData = JSON.parse(JSON.stringify(STATE.localDB));
+        exportData.type = "prompt_manager_export"; 
+        exportData.scope = "all";
+        if (!includeImg) exportData.images = {};
+        targetCtxs = Object.keys(STATE.localDB.contexts || {}); 
+    } else {
+        exportData.settings = STATE.localDB.settings; 
+        
+        if (scope === "model") {
+            exportData.models.main_models[currentModelId] = JSON.parse(JSON.stringify(modelData));
+            Object.keys(modelData.modes).forEach(mId => targetCtxs.push(`${currentModelId}_${mId}`));
+        } else if (scope === "category") {
+            const catId = modelData.modes[currentModeId]?.group || 'custom';
+            exportData.models.main_models[currentModelId] = JSON.parse(JSON.stringify(modelData));
+            for (const mId in exportData.models.main_models[currentModelId].modes) {
+                const m = exportData.models.main_models[currentModelId].modes[mId];
+                if (m.group === catId || (!m.group && catId === 'custom')) {
+                    targetCtxs.push(`${currentModelId}_${mId}`);
+                } else {
+                    delete exportData.models.main_models[currentModelId].modes[mId];
+                }
+            }
+        } else if (scope === "mode") {
+            exportData.models.main_models[currentModelId] = JSON.parse(JSON.stringify(modelData));
+            for (const mId in exportData.models.main_models[currentModelId].modes) {
+                if (mId === currentModeId) {
+                    targetCtxs.push(`${currentModelId}_${mId}`);
+                } else {
+                    delete exportData.models.main_models[currentModelId].modes[mId];
+                }
+            }
+        }
+
+        targetCtxs.forEach(ctx => {
+            if (STATE.localDB.contexts[ctx]) {
+                exportData.contexts[ctx] = JSON.parse(JSON.stringify(STATE.localDB.contexts[ctx]));
+            }
+        });
+
+        if (includeImg) {
+            targetCtxs.forEach(ctx => {
+                if (STATE.localDB.contexts[ctx] && STATE.localDB.contexts[ctx].items) {
+                    STATE.localDB.contexts[ctx].items.forEach(item => {
+                        const imgKey = `${ctx}_${item}`;
+                        if (STATE.localDB.images[imgKey]) {
+                            exportData.images[imgKey] = JSON.parse(JSON.stringify(STATE.localDB.images[imgKey]));
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    const blob = new Blob([JSON.stringify(exportData)], {type: "application/json"});
+    const url = URL.createObjectURL(blob); 
+    const a = document.createElement('a'); 
+    a.href = url; 
+    const imgLabel = includeImg ? "Full" : "NoImg";
+    a.download = `Prompt_Backup_${scope}_${imgLabel}_${Date.now()}.json`; 
+    a.click(); 
+    URL.revokeObjectURL(url);
+
+    window.pmHideModal("pm-export-modal");
 };
 
 // === 3. 大部分业务渲染逻辑 ===
@@ -399,6 +561,30 @@ function openNativeBrowser() {
         `;
         document.body.appendChild(importModal);
 
+        const exportModal = document.createElement("div"); exportModal.className = "pm-modal-overlay"; exportModal.id = "pm-export-modal"; exportModal.style.zIndex = "20002";
+        exportModal.innerHTML = `
+            <div class="pm-create-box" style="width: 500px;">
+                <div class="pm-create-header"><b style="color:#ff6b9d;">导出数据</b><button class="pm-close-btn" onclick="pmHideModal('pm-export-modal')">关闭</button></div>
+                <div class="pm-create-content" style="padding: 20px;">
+                    <label style="color:#ccc; font-weight:bold; margin-bottom:10px; display:block;">选择导出范围</label>
+                    <select id="pm-export-scope" class="pm-scope-select" style="width:100%; margin-bottom:20px;">
+                        <option value="all">导出全库 (所有一级分类)</option>
+                        <option value="model">导出当前一级分类 (全部子类)</option>
+                        <option value="category">导出当前二级分类</option>
+                        <option value="mode">导出当前三级分类</option>
+                    </select>
+                    
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:bold; color:#ff6b9d;">
+                        <input type="checkbox" id="pm-export-img-check" checked> 包含图片数据 (体积较大)
+                    </label>
+                    <p style="font-size:12px; color:#888; margin-top:10px; line-height:1.5;">* 如果取消勾选图片，将仅导出纯文本的属性、收藏夹分组、组合预设等配置信息。该选项极大地缩小了文件体积。</p>
+                    
+                    <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-top:20px;" onclick="PM_Global.ui.executeExport()">生成并下载 JSON</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(exportModal);
+
         const imgViewer = document.createElement("div"); imgViewer.id = "pm-image-viewer"; imgViewer.className = "pm-modal-overlay"; imgViewer.style.zIndex = "20005";
         imgViewer.innerHTML = `<img id="pm-viewer-img" src="">`; document.body.appendChild(imgViewer); imgViewer.onclick = () => window.pmHideModal("pm-image-viewer");
 
@@ -558,11 +744,7 @@ function openNativeBrowser() {
             renderGrid(); 
         };
         document.getElementById("pm-btn-export").onclick = () => {
-            const includeImg = confirm("包含图片数据？\n[确定] 全量导出\n[取消] 仅导出文本结构");
-            const exportData = JSON.parse(JSON.stringify(STATE.localDB));
-            if (!includeImg) exportData.images = {};
-            const blob = new Blob([JSON.stringify(exportData)], {type: "application/json"});
-            const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `Prompt_Backup_${Date.now()}.json`; a.click(); URL.revokeObjectURL(url);
+            window.pmShowModal("pm-export-modal");
         };
         document.getElementById("pm-btn-import").onclick = () => document.getElementById("pm-hidden-import").click();
         document.getElementById("pm-hidden-import").onchange = (e) => { if (e.target.files.length > 0) handleImportFile(e.target.files[0]); e.target.value = ''; };
@@ -683,7 +865,7 @@ function renderSidebar() {
     const models = STATE.localDB.models.main_models;
     if (!STATE.currentModelId || !models[STATE.currentModelId]) return;
     const currentModel = models[STATE.currentModelId];
-    if (!currentModel.categories) currentModel.categories = [{ id: 'custom', name: '默认二级分类' }];
+    if (!currentModel.categories || currentModel.categories.length === 0) currentModel.categories = [{ id: 'custom', name: '默认二级分类' }];
     if (!currentModel.modes) currentModel.modes = {};
 
     let firstModeId = null;
@@ -953,18 +1135,80 @@ function handleImportFile(file) {
     const reader = new FileReader();
     reader.onload = async (ev) => {
         try {
-            const data = JSON.parse(ev.target.result); let normalizedData = { contexts: {}, images: {} };
+            const data = JSON.parse(ev.target.result); 
+            let normalizedData = { contexts: {}, images: {} };
+            let sourceMeta = {};
+
             if (data.type === 'multi_export' && data.contexts) {
                 for (const [ctx, ctxData] of Object.entries(data.contexts)) {
-                    normalizedData.contexts[ctx] = { items: ctxData.items || [], metadata: ctxData.metadata || {} };
-                    if (ctxData.images) { for (const [itemName, imgData] of Object.entries(ctxData.images)) { normalizedData.images[`${ctx}_${itemName}`] = Array.isArray(imgData) ? imgData : [imgData]; } }
+                    normalizedData.contexts[ctx] = { 
+                        items: ctxData.items || [], 
+                        metadata: ctxData.metadata || {},
+                        groups: ctxData.groups || [],
+                        combos: ctxData.combinations || [] 
+                    };
+                    sourceMeta[ctx] = {
+                        modeName: ctxData.modeInfo?.name || ctx.split('_').slice(1).join('_'),
+                        modelName: ctx.split('_')[0]
+                    };
+                    if (ctxData.images) { 
+                        for (const [itemName, imgData] of Object.entries(ctxData.images)) { 
+                            normalizedData.images[`${ctx}_${itemName}`] = Array.isArray(imgData) ? imgData : [imgData]; 
+                        } 
+                    }
                 }
             } else if (data.items && data.metadata) {
                 const ctx = data.context || `${STATE.currentModelId}_${STATE.currentModeId}`;
-                normalizedData.contexts[ctx] = { items: data.items || [], metadata: data.metadata || {} };
-                if (data.images) { for (const [itemName, imgData] of Object.entries(data.images)) { normalizedData.images[`${ctx}_${itemName}`] = Array.isArray(imgData) ? imgData : [imgData]; } }
-            } else if (data.contexts) normalizedData = data; else throw new Error();
+                normalizedData.contexts[ctx] = { 
+                    items: data.items || [], 
+                    metadata: data.metadata || {},
+                    groups: data.groups || [],
+                    combos: data.combinations || []
+                };
+                sourceMeta[ctx] = { modeName: ctx.split('_').slice(1).join('_'), modelName: ctx.split('_')[0] };
+                if (data.images) { 
+                    for (const [itemName, imgData] of Object.entries(data.images)) { 
+                        normalizedData.images[`${ctx}_${itemName}`] = Array.isArray(imgData) ? imgData : [imgData]; 
+                    } 
+                }
+            } else if (data.contexts) {
+                normalizedData = data;
+                for (const ctx of Object.keys(data.contexts)) {
+                    let mId = ctx;
+                    let modId = ctx;
+                    let mName = modId;
+                    let modelName = mId;
+                    
+                    if (data.models && data.models.main_models) {
+                        const knownModelIds = Object.keys(data.models.main_models).sort((a,b) => b.length - a.length);
+                        for (const knownId of knownModelIds) {
+                            if (ctx.startsWith(knownId + '_')) {
+                                mId = knownId;
+                                modId = ctx.substring(knownId.length + 1);
+                                break;
+                            }
+                        }
+                        const modelObj = data.models.main_models[mId];
+                        if (modelObj) {
+                            modelName = modelObj.name || mId;
+                            if (modelObj.modes && modelObj.modes[modId]) {
+                                mName = modelObj.modes[modId].name || modId;
+                            }
+                        }
+                    } else {
+                        const firstUnder = ctx.indexOf('_');
+                        if (firstUnder > -1) {
+                            mId = ctx.substring(0, firstUnder);
+                            modId = ctx.substring(firstUnder + 1);
+                            mName = modId;
+                        }
+                    }
+                    sourceMeta[ctx] = { modeName: mName, modelName: modelName };
+                }
+            } else throw new Error();
+            
             STATE.pendingImportData = normalizedData;
+            STATE.pendingImportMeta = sourceMeta;
             document.getElementById("pm-import-ctx-count").innerText = Object.keys(normalizedData.contexts).length;
             window.pmShowModal("pm-import-modal");
         } catch (err) { alert("数据包解析失败！"); }
@@ -1009,7 +1253,35 @@ async function editModel(mId) { const newName = prompt("重命名一级分类:",
 async function deleteModel(mId) { if (!confirm(`删除该一级分类及其所有数据？`)) return; UI.updateProgress("清理中...", "请稍候"); for (const ctx of Object.keys(STATE.localDB.contexts)) { if (ctx.startsWith(mId + "_")) { await cleanupContextImages(ctx); delete STATE.localDB.contexts[ctx]; } } delete STATE.localDB.models.main_models[mId]; if (STATE.currentModelId === mId) { STATE.currentModelId = null; STATE.currentModeId = null; } await PromptAPI.saveDB(STATE.localDB); UI.hideProgress(); renderModelTabs(); UTILS.syncImportNodeWidgets(); }
 async function addCategory() { const name = prompt("新二级分类名称:"); if (!name) return; STATE.localDB.models.main_models[STATE.currentModelId].categories.push({ id: "cat_" + Date.now(), name }); await PromptAPI.saveDB(STATE.localDB); renderSidebar(); UTILS.syncImportNodeWidgets(); }
 async function editCategory(cId) { const cat = STATE.localDB.models.main_models[STATE.currentModelId].categories.find(c => c.id === cId); if(!cat) return; const newName = prompt("重命名二级分类:", cat.name); if (!newName) return; cat.name = newName; await PromptAPI.saveDB(STATE.localDB); renderSidebar(); UTILS.syncImportNodeWidgets(); }
-async function deleteCategory(cId) { if (!confirm("删除此二级分类？(其下三级分类将移入默认二级分类)")) return; const model = STATE.localDB.models.main_models[STATE.currentModelId]; model.categories = model.categories.filter(c => c.id !== cId); Object.values(model.modes).forEach(m => { if(m.group === cId) m.group = model.categories[0]?.id || 'custom'; }); await PromptAPI.saveDB(STATE.localDB); renderSidebar(); UTILS.syncImportNodeWidgets(); }
+
+async function deleteCategory(cId) { 
+    if (!confirm("彻底删除此二级分类？(其下的所有三级分类及数据将被永久清除！)")) return; 
+    UI.updateProgress("清理中...", "请稍候");
+    const model = STATE.localDB.models.main_models[STATE.currentModelId]; 
+    
+    const modesToDelete = [];
+    for (const [modId, m] of Object.entries(model.modes)) {
+        if (m.group === cId) {
+            modesToDelete.push(modId);
+        }
+    }
+    
+    for (const modId of modesToDelete) {
+        const ctx = `${STATE.currentModelId}_${modId}`;
+        await cleanupContextImages(ctx);
+        delete STATE.localDB.contexts[ctx];
+        delete model.modes[modId];
+        if (STATE.currentModeId === modId) STATE.currentModeId = null;
+    }
+
+    model.categories = model.categories.filter(c => c.id !== cId); 
+    
+    await PromptAPI.saveDB(STATE.localDB); 
+    UI.hideProgress();
+    renderSidebar(); 
+    UTILS.syncImportNodeWidgets(); 
+}
+
 async function addMode(catId) { const name = prompt("新三级分类名称:"); if (!name) return; const id = name.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '').toLowerCase() + "_" + Date.now(); STATE.localDB.models.main_models[STATE.currentModelId].modes[id] = { name: name, group: catId }; await PromptAPI.saveDB(STATE.localDB); STATE.currentModeId = id; renderSidebar(); UTILS.syncImportNodeWidgets(); }
 async function editMode(modId) { const newName = prompt("重命名三级分类:", STATE.localDB.models.main_models[STATE.currentModelId].modes[modId].name); if (!newName) return; STATE.localDB.models.main_models[STATE.currentModelId].modes[modId].name = newName; await PromptAPI.saveDB(STATE.localDB); renderSidebar(); UTILS.syncImportNodeWidgets(); }
 async function deleteMode(modId) { if (!confirm(`彻底删除该三级分类下的所有数据？`)) return; UI.updateProgress("清理中...", "请稍候"); const ctx = `${STATE.currentModelId}_${modId}`; await cleanupContextImages(ctx); delete STATE.localDB.contexts[ctx]; delete STATE.localDB.models.main_models[STATE.currentModelId].modes[modId]; if (STATE.currentModeId === modId) STATE.currentModeId = null; await PromptAPI.saveDB(STATE.localDB); UI.hideProgress(); renderSidebar(); UTILS.syncImportNodeWidgets(); }
@@ -1079,8 +1351,6 @@ app.registerExtension({
                 header.innerHTML = `<span>&lt;Prompt&gt;</span><span style="padding-right:38px;">&lt;权重&gt;</span>`;
                 const listBody = document.createElement("div"); listBody.style.cssText = "display: flex; flex-direction: column; gap: 4px;";
                 listContainer.appendChild(header); listContainer.appendChild(listBody);
-
-                this.addDOMWidget("prompt_list", "HTML", listContainer, { serialize: false, hideOnZoom: false });
 
                 let cachedList = []; let isUpdatingFromList = false;
 
