@@ -1,4 +1,3 @@
-// 文件路径：web/comfyui/prompt_browser.js
 import { app } from "../../scripts/app.js";
 import { PromptAPI } from "./prompt_api.js";
 
@@ -109,24 +108,23 @@ window.executeImportFinal = async function() {
     const targetStrategy = document.querySelector('input[name="pm-import-target"]:checked').value;
     const isMerge = document.getElementById('pm-import-merge-check').checked;
     const data = STATE.pendingImportData;
+    
+    const getModIdFromCtx = (ctx) => {
+        let mId = ctx.split('_')[0];
+        if (data.models && data.models.main_models) {
+            for (const key of Object.keys(data.models.main_models)) {
+                if (ctx.startsWith(key + '_')) return ctx.substring(key.length + 1);
+            }
+        }
+        return ctx.substring(mId.length + 1);
+    };
+
     try {
         const ctxMapping = {};
         for (let oldCtx of Object.keys(data.contexts)) {
             let targetCtx = oldCtx;
             if (targetStrategy === 'current_tab') {
-                let oldModeId = oldCtx;
-                if (data.models && data.models.main_models) {
-                    const knownModelIds = Object.keys(data.models.main_models).sort((a,b) => b.length - a.length);
-                    for (const knownId of knownModelIds) {
-                        if (oldCtx.startsWith(knownId + '_')) {
-                            oldModeId = oldCtx.substring(knownId.length + 1);
-                            break;
-                        }
-                    }
-                } else {
-                    const firstUnder = oldCtx.indexOf('_');
-                    if (firstUnder > -1) oldModeId = oldCtx.substring(firstUnder + 1);
-                }
+                let oldModeId = getModIdFromCtx(oldCtx);
                 targetCtx = `${STATE.currentModelId}_${oldModeId}`;
             } else if (targetStrategy === 'current_mode') {
                 targetCtx = `${STATE.currentModelId}_${STATE.currentModeId}`;
@@ -174,48 +172,21 @@ window.executeImportFinal = async function() {
             const modelName = meta.modelName || '导入模型';
             
             if (targetStrategy === 'current_tab') {
-                let oldModeId = oldCtx;
-                if (data.models && data.models.main_models) {
-                    const knownModelIds = Object.keys(data.models.main_models).sort((a,b) => b.length - a.length);
-                    for (const knownId of knownModelIds) {
-                        if (oldCtx.startsWith(knownId + '_')) {
-                            oldModeId = oldCtx.substring(knownId.length + 1);
-                            break;
-                        }
-                    }
-                } else {
-                    const firstUnder = oldCtx.indexOf('_');
-                    if (firstUnder > -1) oldModeId = oldCtx.substring(firstUnder + 1);
-                }
-
+                let oldModeId = getModIdFromCtx(oldCtx);
                 if (!STATE.localDB.models.main_models[STATE.currentModelId].modes[oldModeId]) {
                     const catId = STATE.localDB.models.main_models[STATE.currentModelId].categories[0]?.id || 'custom';
                     STATE.localDB.models.main_models[STATE.currentModelId].modes[oldModeId] = { name: modeName, group: catId };
                 }
             } else if (targetStrategy === 'original') {
-                if (targetCtx.includes('_')) {
-                    let mId = targetCtx;
-                    let modId = targetCtx;
-                    if (data.models && data.models.main_models) {
-                        const knownModelIds = Object.keys(data.models.main_models).sort((a,b) => b.length - a.length);
-                        for (const knownId of knownModelIds) {
-                            if (targetCtx.startsWith(knownId + '_')) {
-                                mId = knownId;
-                                modId = targetCtx.substring(knownId.length + 1);
-                                break;
-                            }
-                        }
-                    } else {
-                        const firstUnder = targetCtx.indexOf('_');
-                        if (firstUnder > -1) {
-                            mId = targetCtx.substring(0, firstUnder);
-                            modId = targetCtx.substring(firstUnder + 1);
-                        }
+                let mId = oldCtx.split('_')[0];
+                let modId = oldCtx.substring(mId.length + 1);
+                if (data.models && data.models.main_models) {
+                    for (const key of Object.keys(data.models.main_models)) {
+                        if (oldCtx.startsWith(key + '_')) { mId = key; modId = oldCtx.substring(key.length + 1); break; }
                     }
-
-                    if (!STATE.localDB.models.main_models[mId]) STATE.localDB.models.main_models[mId] = { name: modelName, categories: [{id:'custom', name:'导入分类'}], modes: {} };
-                    if (!STATE.localDB.models.main_models[mId].modes[modId]) STATE.localDB.models.main_models[mId].modes[modId] = { name: modeName, group: "custom" };
                 }
+                if (!STATE.localDB.models.main_models[mId]) STATE.localDB.models.main_models[mId] = { name: modelName, categories: [{id:'custom', name:'导入分类'}], modes: {} };
+                if (!STATE.localDB.models.main_models[mId].modes[modId]) STATE.localDB.models.main_models[mId].modes[modId] = { name: modeName, group: "custom" };
             }
 
             if (!STATE.localDB.contexts[targetCtx]) STATE.localDB.contexts[targetCtx] = { items: [], metadata: {} };
@@ -542,7 +513,7 @@ function openNativeBrowser() {
         const importModal = document.createElement("div"); importModal.className = "pm-modal-overlay"; importModal.id = "pm-import-modal"; importModal.style.zIndex = "20002";
         importModal.innerHTML = `
             <div class="pm-create-box" style="width: 550px;">
-                <div class="pm-create-header"><b style="color:#ff6b9d;">智能导入引擎</b><button class="pm-close-btn" onclick="pmHideModal('pm-import-modal')">关闭</button></div>
+                <div class="pm-create-header"><b style="color:#ff6b9d;">数据导入</b><button class="pm-close-btn" onclick="pmHideModal('pm-import-modal')">关闭</button></div>
                 <div class="pm-create-content" style="padding: 20px;">
                     <div style="background: rgba(255,107,157,0.1); padding:10px; border-radius:8px; margin-bottom:15px; border: 1px dashed rgba(255,107,157,0.3);">
                         <span style="font-weight:bold; color:#ff6b9d; display:block; margin-bottom:5px;">包含分类数: <span id="pm-import-ctx-count"></span></span>
@@ -553,7 +524,7 @@ function openNativeBrowser() {
                         <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #333;"><input type="radio" name="pm-import-target" value="original"><div><div style="color:#ccc;font-weight:bold;">原路严格恢复</div></div></label>
                     </div>
                     <div style="border-top:1px dashed #444; padding-top:15px;">
-                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:bold; color:#ff6b9d;"><input type="checkbox" id="pm-import-merge-check" checked> 与目标现有数据追加合并</label>
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:bold; color:#ff6b9d;"><input type="checkbox" id="pm-import-merge-check" checked> 与目标位置的现有数据进行追加合并</label>
                     </div>
                     <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-top:20px;" onclick="executeImportFinal()">开始导入</button>
                 </div>
@@ -1139,6 +1110,21 @@ function handleImportFile(file) {
             let normalizedData = { contexts: {}, images: {} };
             let sourceMeta = {};
 
+            const extractIds = (ctxStr, dataObj) => {
+                let mId = ctxStr.split('_')[0];
+                let modId = ctxStr.substring(mId.length + 1);
+                if (dataObj.models && dataObj.models.main_models) {
+                    for (const key of Object.keys(dataObj.models.main_models)) {
+                        if (ctxStr.startsWith(key + '_')) {
+                            mId = key;
+                            modId = ctxStr.substring(key.length + 1);
+                            break;
+                        }
+                    }
+                }
+                return { mId, modId };
+            };
+
             if (data.type === 'multi_export' && data.contexts) {
                 for (const [ctx, ctxData] of Object.entries(data.contexts)) {
                     normalizedData.contexts[ctx] = { 
@@ -1147,9 +1133,10 @@ function handleImportFile(file) {
                         groups: ctxData.groups || [],
                         combos: ctxData.combinations || [] 
                     };
+                    const { mId, modId } = extractIds(ctx, data);
                     sourceMeta[ctx] = {
-                        modeName: ctxData.modeInfo?.name || ctx.split('_').slice(1).join('_'),
-                        modelName: ctx.split('_')[0]
+                        modeName: ctxData.modeInfo?.name || modId,
+                        modelName: mId
                     };
                     if (ctxData.images) { 
                         for (const [itemName, imgData] of Object.entries(ctxData.images)) { 
@@ -1165,7 +1152,8 @@ function handleImportFile(file) {
                     groups: data.groups || [],
                     combos: data.combinations || []
                 };
-                sourceMeta[ctx] = { modeName: ctx.split('_').slice(1).join('_'), modelName: ctx.split('_')[0] };
+                const { mId, modId } = extractIds(ctx, data);
+                sourceMeta[ctx] = { modeName: modId, modelName: mId };
                 if (data.images) { 
                     for (const [itemName, imgData] of Object.entries(data.images)) { 
                         normalizedData.images[`${ctx}_${itemName}`] = Array.isArray(imgData) ? imgData : [imgData]; 
@@ -1174,35 +1162,9 @@ function handleImportFile(file) {
             } else if (data.contexts) {
                 normalizedData = data;
                 for (const ctx of Object.keys(data.contexts)) {
-                    let mId = ctx;
-                    let modId = ctx;
-                    let mName = modId;
-                    let modelName = mId;
-                    
-                    if (data.models && data.models.main_models) {
-                        const knownModelIds = Object.keys(data.models.main_models).sort((a,b) => b.length - a.length);
-                        for (const knownId of knownModelIds) {
-                            if (ctx.startsWith(knownId + '_')) {
-                                mId = knownId;
-                                modId = ctx.substring(knownId.length + 1);
-                                break;
-                            }
-                        }
-                        const modelObj = data.models.main_models[mId];
-                        if (modelObj) {
-                            modelName = modelObj.name || mId;
-                            if (modelObj.modes && modelObj.modes[modId]) {
-                                mName = modelObj.modes[modId].name || modId;
-                            }
-                        }
-                    } else {
-                        const firstUnder = ctx.indexOf('_');
-                        if (firstUnder > -1) {
-                            mId = ctx.substring(0, firstUnder);
-                            modId = ctx.substring(firstUnder + 1);
-                            mName = modId;
-                        }
-                    }
+                    const { mId, modId } = extractIds(ctx, data);
+                    const mName = data.models?.main_models?.[mId]?.modes?.[modId]?.name || modId;
+                    const modelName = data.models?.main_models?.[mId]?.name || mId;
                     sourceMeta[ctx] = { modeName: mName, modelName: modelName };
                 }
             } else throw new Error();
@@ -1247,7 +1209,6 @@ function setupMarquee() {
     main.addEventListener("mouseup", stopDrawing); main.addEventListener("mouseleave", stopDrawing);
 }
 
-// 侧边栏增删改查
 async function addModel() { const name = prompt("新一级分类名称:"); if (!name) return; const id = name.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '').toLowerCase() + "_" + Date.now(); STATE.localDB.models.main_models[id] = { name: name, categories: [{id:'custom', name:'默认二级分类'}], modes: {} }; await PromptAPI.saveDB(STATE.localDB); STATE.currentModelId = id; STATE.currentModeId = null; renderModelTabs(); UTILS.syncImportNodeWidgets(); }
 async function editModel(mId) { const newName = prompt("重命名一级分类:", STATE.localDB.models.main_models[mId].name); if (!newName) return; STATE.localDB.models.main_models[mId].name = newName; await PromptAPI.saveDB(STATE.localDB); renderModelTabs(); UTILS.syncImportNodeWidgets(); }
 async function deleteModel(mId) { if (!confirm(`删除该一级分类及其所有数据？`)) return; UI.updateProgress("清理中...", "请稍候"); for (const ctx of Object.keys(STATE.localDB.contexts)) { if (ctx.startsWith(mId + "_")) { await cleanupContextImages(ctx); delete STATE.localDB.contexts[ctx]; } } delete STATE.localDB.models.main_models[mId]; if (STATE.currentModelId === mId) { STATE.currentModelId = null; STATE.currentModeId = null; } await PromptAPI.saveDB(STATE.localDB); UI.hideProgress(); renderModelTabs(); UTILS.syncImportNodeWidgets(); }
@@ -1328,7 +1289,7 @@ app.registerExtension({
                     return lastResult;
                 }
             } catch (e) {
-                console.error("【Prompt管理器】自动随机抽卡发生错误:", e);
+                console.error("[PromptManager] 自动随机抽卡发生错误:", e);
             }
             return await origQueuePrompt.apply(this, arguments);
         };
@@ -1339,8 +1300,10 @@ app.registerExtension({
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 if (onNodeCreated) onNodeCreated.apply(this, arguments);
-                const promptWidget = this.widgets.find(w => w.name === "prompt_text" || w.name === "输入prompt");
                 
+                const promptWidget = this.widgets.find(w => w.name === "prompt_text" || w.name === "输入prompt");
+                if (!promptWidget) return;
+
                 const listContainer = document.createElement("div");
                 listContainer.style.cssText = "width: 100%; min-height: 50px; max-height: 180px; overflow-y: auto; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; padding: 5px; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; font-family: sans-serif;";
                 listContainer.addEventListener("wheel", (e) => e.stopPropagation(), { passive: false });
@@ -1349,15 +1312,31 @@ app.registerExtension({
                 const header = document.createElement("div");
                 header.style.cssText = "display: flex; justify-content: space-between; font-size: 11px; color: #ff6b9d; font-weight: bold; padding: 0 5px 4px 5px; border-bottom: 1px dashed rgba(255,107,157,0.4); margin-bottom: 4px;";
                 header.innerHTML = `<span>&lt;Prompt&gt;</span><span style="padding-right:38px;">&lt;权重&gt;</span>`;
-                const listBody = document.createElement("div"); listBody.style.cssText = "display: flex; flex-direction: column; gap: 4px;";
-                listContainer.appendChild(header); listContainer.appendChild(listBody);
+                
+                const listBody = document.createElement("div"); 
+                listBody.style.cssText = "display: flex; flex-direction: column; gap: 4px;";
+                
+                listContainer.appendChild(header); 
+                listContainer.appendChild(listBody);
+
+                const htmlListWidget = this.addDOMWidget("prompt_list", "HTML", listContainer, { serialize: false, hideOnZoom: false });
 
                 let cachedList = []; let isUpdatingFromList = false;
 
                 const renderList = () => {
                     listBody.innerHTML = '';
-                    if (!isUpdatingFromList) cachedList = UTILS.parsePromptText(promptWidget.value);
-                    if (cachedList.length === 0) { listBody.innerHTML = '<div style="color:#555; font-size:11px; text-align:center; padding:10px;">暂无 Prompt</div>'; return; }
+                    try {
+                        if (!isUpdatingFromList && UTILS && UTILS.parsePromptText) {
+                            cachedList = UTILS.parsePromptText(promptWidget.value || "");
+                        }
+                    } catch (err) {
+                        console.error("[PromptManager] 解析 Prompt 失败:", err);
+                    }
+
+                    if (!cachedList || cachedList.length === 0) { 
+                        listBody.innerHTML = '<div style="color:#555; font-size:11px; text-align:center; padding:10px;">暂无 Prompt</div>'; 
+                        return; 
+                    }
 
                     cachedList.forEach((item, index) => {
                         const row = document.createElement("div");
@@ -1395,7 +1374,10 @@ app.registerExtension({
                 };
 
                 const originalCallback = promptWidget.callback;
-                promptWidget.callback = function() { if (originalCallback) originalCallback.apply(this, arguments); if (!isUpdatingFromList) renderList(); };
+                promptWidget.callback = function() { 
+                    if (originalCallback) originalCallback.apply(this, arguments); 
+                    if (!isUpdatingFromList) renderList(); 
+                };
                 renderList();
 
                 const btnOpen = this.addWidget("button", "打开 Prompt 浏览器", "open", async () => {
@@ -1423,22 +1405,21 @@ app.registerExtension({
                     promptWidget.value = UTILS.buildPromptText(newParsed); app.graph.setDirtyCanvas(true); renderList();
                 });
 
-                // === 强制规定控件的完美展示顺序 ===
                 const autoRandomWidget = this.widgets.find(w => w.name === "自动随机抽取");
                 const countWidget = this.widgets.find(w => w.name === "抽取数量");
-                const htmlListWidget = this.widgets.find(w => w.name === "prompt_list");
 
                 const desiredOrder = [
-                    btnOpen,           // 第一：打开浏览器按钮
-                    btnRandom,         // 第二：手动点击抽取
-                    autoRandomWidget,  // 第三：是否开启自动随机（控制开关）
-                    countWidget,       // 第四：数量设定
-                    promptWidget,      // 第五：超大文本框
-                    htmlListWidget     // 第六：自定义可视化列表
+                    btnOpen,
+                    btnRandom,
+                    autoRandomWidget,
+                    countWidget,
+                    promptWidget,
+                    htmlListWidget
                 ].filter(Boolean);     
 
                 const otherWidgets = this.widgets.filter(w => !desiredOrder.includes(w));
                 this.widgets = [...desiredOrder, ...otherWidgets];
+                
                 this.setSize([400, 420]);
             };
         }
