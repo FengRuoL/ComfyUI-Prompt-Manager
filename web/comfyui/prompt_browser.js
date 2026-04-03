@@ -290,10 +290,13 @@ window.PM_Global.ui.executeBatchEdit = async function() {
     alert("批量操作已成功应用！");
 };
 
-window.PM_Global.ui.executeExport = function() {
+window.PM_Global.ui.executeExport = async function() {
     const scope = document.getElementById("pm-export-scope").value;
     const includeImg = document.getElementById("pm-export-img-check").checked;
     
+    // 唤起进度条，防止大文件打包时页面假死
+    UI.updateProgress("正在准备导出...", "统计数据结构");
+
     let exportData = {
         type: "prompt_manager_export",
         scope: scope,
@@ -308,10 +311,8 @@ window.PM_Global.ui.executeExport = function() {
     const modelData = STATE.localDB.models.main_models[currentModelId];
 
     if (scope === "all") {
-        exportData = JSON.parse(JSON.stringify(STATE.localDB));
-        exportData.type = "prompt_manager_export"; 
-        exportData.scope = "all";
-        if (!includeImg) exportData.images = {};
+        exportData.models = JSON.parse(JSON.stringify(STATE.localDB.models));
+        exportData.settings = STATE.localDB.settings;
         targetCtxs = Object.keys(STATE.localDB.contexts || {}); 
     } else {
         exportData.settings = STATE.localDB.settings; 
@@ -340,37 +341,81 @@ window.PM_Global.ui.executeExport = function() {
                 }
             }
         }
+    }
 
+    targetCtxs.forEach(ctx => {
+        if (STATE.localDB.contexts[ctx]) {
+            exportData.contexts[ctx] = JSON.parse(JSON.stringify(STATE.localDB.contexts[ctx]));
+        }
+    });
+
+    // 核心修复：真实提取并转换图片数据
+    if (includeImg) {
+        let totalImgs = 0;
+        let processedImgs = 0;
+
+        // 预先计算图片总数以更新进度条
         targetCtxs.forEach(ctx => {
-            if (STATE.localDB.contexts[ctx]) {
-                exportData.contexts[ctx] = JSON.parse(JSON.stringify(STATE.localDB.contexts[ctx]));
+            if (STATE.localDB.contexts[ctx] && STATE.localDB.contexts[ctx].items) {
+                STATE.localDB.contexts[ctx].items.forEach(item => {
+                    const imgKey = `${ctx}_${item}`;
+                    if (STATE.localDB.images[imgKey]) totalImgs += STATE.localDB.images[imgKey].length;
+                });
             }
         });
 
-        if (includeImg) {
-            targetCtxs.forEach(ctx => {
-                if (STATE.localDB.contexts[ctx] && STATE.localDB.contexts[ctx].items) {
-                    STATE.localDB.contexts[ctx].items.forEach(item => {
-                        const imgKey = `${ctx}_${item}`;
-                        if (STATE.localDB.images[imgKey]) {
-                            exportData.images[imgKey] = JSON.parse(JSON.stringify(STATE.localDB.images[imgKey]));
+        for (const ctx of targetCtxs) {
+            if (STATE.localDB.contexts[ctx] && STATE.localDB.contexts[ctx].items) {
+                for (const item of STATE.localDB.contexts[ctx].items) {
+                    const imgKey = `${ctx}_${item}`;
+                    if (STATE.localDB.images[imgKey] && STATE.localDB.images[imgKey].length > 0) {
+                        exportData.images[imgKey] = [];
+                        for (const url of STATE.localDB.images[imgKey]) {
+                            try {
+                                processedImgs++;
+                                // 限制 UI 更新频率，避免过度消耗性能
+                                if (processedImgs % 5 === 0 || processedImgs === totalImgs) {
+                                    let pct = Math.round((processedImgs / totalImgs) * 100);
+                                    UI.updateProgress("正在打包实体图片...", `处理进度: ${processedImgs} / ${totalImgs}`, pct);
+                                }
+
+                                if (url.startsWith('/prompt_data/')) {
+                                    // 抓取本地图片并转换为 Base64
+                                    const b64 = await UTILS.urlToBase64(url);
+                                    exportData.images[imgKey].push(b64);
+                                } else {
+                                    exportData.images[imgKey].push(url);
+                                }
+                            } catch (err) {
+                                console.warn(`图片打包失败 (路径: ${url})`, err);
+                            }
                         }
-                    });
+                    }
                 }
-            });
+            }
         }
     }
 
-    const blob = new Blob([JSON.stringify(exportData)], {type: "application/json"});
-    const url = URL.createObjectURL(blob); 
-    const a = document.createElement('a'); 
-    a.href = url; 
-    const imgLabel = includeImg ? "Full" : "NoImg";
-    a.download = `Prompt_Backup_${scope}_${imgLabel}_${Date.now()}.json`; 
-    a.click(); 
-    URL.revokeObjectURL(url);
+    UI.updateProgress("正在生成文件...", "即将开始下载，请勿刷新页面");
 
-    window.pmHideModal("pm-export-modal");
+    // 延迟 500ms 保证主线程不卡死，执行下载
+    setTimeout(() => {
+        try {
+            const blob = new Blob([JSON.stringify(exportData)], {type: "application/json"});
+            const url = URL.createObjectURL(blob); 
+            const a = document.createElement('a'); 
+            a.href = url; 
+            const imgLabel = includeImg ? "Full" : "NoImg";
+            a.download = `Prompt_Backup_${scope}_${imgLabel}_${Date.now()}.json`; 
+            a.click(); 
+            URL.revokeObjectURL(url);
+            window.pmHideModal("pm-export-modal");
+            UI.hideProgress();
+        } catch(e) {
+            UI.hideProgress();
+            alert("导出失败！可能是图库极大（几百MB）触发了浏览器的单字符串内存限制。请尝试缩小导出范围（如按大类或小类导出）。");
+        }
+    }, 500);
 };
 
 // === 3. 大部分业务渲染逻辑 ===
@@ -658,6 +703,12 @@ function openNativeBrowser() {
                         <select class="pm-scope-select" id="pm-search-scope">
                             <option value="mode">搜索: 当前三级分类</option><option value="category">搜索: 当前二级分类</option><option value="model">搜索: 当前一级分类</option>
                         </select>
+                        <select class="pm-scope-select" id="pm-sort-select">
+                            <option value="name_asc">排序: 名称升序</option>
+                            <option value="name_desc">排序: 名称降序</option>
+                            <option value="img_first">排序: 有图优先</option>
+                            <option value="img_last">排序: 无图优先</option>
+                        </select>
                         <div class="pm-toolbar-right"><span style="font-size:12px; color:#aaa;">尺寸调节</span><input type="range" class="pm-zoom-slider" id="pm-zoom-slider" min="140" max="300" value="180"></div>
                     </div>
                     <div class="pm-main" id="pm-main"><div id="pm-marquee"></div></div>
@@ -705,6 +756,7 @@ function openNativeBrowser() {
         let searchTimeout;
         document.getElementById("pm-search-input").oninput = (e) => { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { STATE.searchQuery = e.target.value.toLowerCase().trim(); renderGrid(); }, 300); };
         document.getElementById("pm-search-scope").onchange = (e) => { STATE.searchScope = e.target.value; renderGrid(); };
+        document.getElementById("pm-sort-select").onchange = (e) => { STATE.sortMode = e.target.value; renderGrid(); };
         document.getElementById("pm-zoom-slider").oninput = () => renderGrid();
 
         document.getElementById("pm-btn-batch").onclick = () => { 
@@ -950,6 +1002,23 @@ function renderGrid() {
     });
 
     if (allItems.length === 0) return main.innerHTML += '<div style="color:#555; grid-column: 1 / -1; margin-top:10px;">空空如也。</div>';
+
+    const sortMode = STATE.sortMode || "name_asc";
+    allItems.sort((a, b) => {
+        if (sortMode === "name_asc") {
+            return a.item.localeCompare(b.item, 'zh-CN');
+        } else if (sortMode === "name_desc") {
+            return b.item.localeCompare(a.item, 'zh-CN');
+        } else if (sortMode === "img_first" || sortMode === "img_last") {
+            const aHasImg = (STATE.localDB.images[`${a.ctx}_${a.item}`]?.length > 0) ? 1 : 0;
+            const bHasImg = (STATE.localDB.images[`${b.ctx}_${b.item}`]?.length > 0) ? 1 : 0;
+            if (aHasImg !== bHasImg) {
+                return sortMode === "img_first" ? bHasImg - aHasImg : aHasImg - bHasImg;
+            }
+            return a.item.localeCompare(b.item, 'zh-CN');
+        }
+        return 0;
+    });
 
     let activePrompts = [];
     if (STATE.currentActiveWidget && STATE.currentActiveWidget.value) activePrompts = UTILS.parsePromptText(STATE.currentActiveWidget.value).map(p => p.tag);
@@ -1268,19 +1337,19 @@ app.registerExtension({
             try {
                 let hasAutoRandom = false;
                 if (app.graph) {
-                    const browserNodes = app.graph._nodes.filter(n => n.type === "PromptBrowserNode");
-                    hasAutoRandom = browserNodes.some(node => node.widgets?.find(w => w.name === "自动随机抽取")?.value);
+                    const targetNodes = app.graph._nodes.filter(n => n.type === "PromptBrowserNode" || n.type === "PromptGroupRandomizerNode");
+                    hasAutoRandom = targetNodes.some(node => node.widgets?.find(w => w.name === "自动随机抽取")?.value);
                 }
 
                 if (hasAutoRandom) {
                     let count = number || 1; 
                     let lastResult;
                     for (let i = 0; i < count; i++) {
-                        const browserNodes = app.graph._nodes.filter(n => n.type === "PromptBrowserNode");
-                        for (const node of browserNodes) {
+                        const targetNodes = app.graph._nodes.filter(n => n.type === "PromptBrowserNode" || n.type === "PromptGroupRandomizerNode");
+                        for (const node of targetNodes) {
                             const autoWidget = node.widgets?.find(w => w.name === "自动随机抽取");
                             if (autoWidget && autoWidget.value) {
-                                const randomBtn = node.widgets?.find(w => w.name === "random" || w.name === "随机抽取");
+                                const randomBtn = node.widgets?.find(w => w.name === "random" || w.name === "随机抽取" || w.name === "draw_blind_box" || w.name === "抽取盲盒");
                                 if (randomBtn && randomBtn.callback) await randomBtn.callback();
                             }
                         }

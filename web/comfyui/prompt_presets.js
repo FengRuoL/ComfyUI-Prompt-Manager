@@ -548,6 +548,11 @@ app.registerExtension({
                     if (groupWidget.value) groupWidget.value = groupWidget.value;
                 }
 
+                let autoRandomWidget = this.widgets.find(w => w.name === "自动随机抽取");
+                if (!autoRandomWidget) {
+                    autoRandomWidget = this.addWidget("toggle", "自动随机抽取", false, () => {});
+                }
+
                 this.addWidget("button", "抽取盲盒", "draw_blind_box", async () => {
                     if (Object.keys(STATE.localDB.contexts || {}).length === 0) STATE.localDB = await UTILS.getAndMigrateDB();
                     const currentGroupWidget = this.widgets.find(w => w.name === "选择分组");

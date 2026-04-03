@@ -35,7 +35,7 @@ async function renderViewerCards(container, textValue, nodeInstance) {
 
     parsed.forEach(item => {
         const card = document.createElement("div");
-        card.style.cssText = "background: #222; border: 1px solid #333; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; transition: 0.2s; align-self: start;";
+        card.style.cssText = "background: #222; border: 1px solid #333; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; transition: 0.2s; align-self: start; height: max-content;";
         
         const images = findImagesForTagFromDB(item.tag, STATE.localDB);
         let currentImgIndex = 0;
@@ -108,7 +108,7 @@ app.registerExtension({
             nodeType.prototype.onNodeCreated = function () {
                 if (onNodeCreated) onNodeCreated.apply(this, arguments);
                 const container = document.createElement("div");
-                container.style.cssText = "width: 100%; min-width: 200px; min-height: 100px; height: 100%; overflow-y: auto; background: #151515; border-radius: 8px; padding: 10px; box-sizing: border-box; display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px;";
+                container.style.cssText = "width: 100%; min-width: 200px; min-height: 100px; height: 100%; overflow-y: auto; background: #151515; border-radius: 8px; padding: 10px; box-sizing: border-box; display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); grid-auto-rows: max-content; align-items: start; gap: 8px;";
                 this.addDOMWidget("viewer_grid", "HTML", container, { serialize: false, hideOnZoom: false });
                 
                 this.viewerContainer = container;
