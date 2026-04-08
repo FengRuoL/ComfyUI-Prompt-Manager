@@ -360,11 +360,19 @@ async def serve_data_dir(request):
 
 @server.PromptServer.instance.routes.get("/api/prompt-manager/db")
 async def get_db(request):
+    # 建立默认空框架，防止前端因为缺少基础对象而崩溃
+    default_db = {"models": {"main_models": {}}, "contexts": {}, "images": {}}
     if os.path.exists(DB_FILE):
         try:
-            with open(DB_FILE, 'r', encoding='utf-8') as f: return web.json_response(json.load(f))
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # 将本地数据与默认框架合并，确保字段安全
+                default_db.update(data)
+                if "models" not in default_db: default_db["models"] = {"main_models": {}}
+                if "main_models" not in default_db["models"]: default_db["models"]["main_models"] = {}
+                return web.json_response(default_db)
         except: pass
-    return web.json_response({})
+    return web.json_response(default_db)
 
 @server.PromptServer.instance.routes.post("/api/prompt-manager/db")
 async def save_db(request):

@@ -106,6 +106,16 @@ window.PM_Global.ui.toggleGroupItem = async function(gIdx, item, ctx, isChecked)
 window.executeImportFinal = async function() {
     window.pmHideModal('pm-import-modal');
     const targetStrategy = document.querySelector('input[name="pm-import-target"]:checked').value;
+    
+    // === 新增拦截逻辑：防止无分类时生成 null_xxx 文件夹 ===
+    if (targetStrategy !== 'original') {
+        if (!STATE.currentModelId || !STATE.currentModeId) {
+            alert("导入失败：当前没有任何分类环境！\n请选择【原路严格恢复】，或者先关闭窗口创建一个模型和分类。");
+            return;
+        }
+    }
+    // ====================================================
+
     const isMerge = document.getElementById('pm-import-merge-check').checked;
     const data = STATE.pendingImportData;
     
@@ -845,6 +855,15 @@ function setupShortcuts() {
 
 function renderModelTabs() {
     const tabsContainer = document.getElementById("pm-tabs"); tabsContainer.innerHTML = '';
+    
+    // === 新增安全校验：彻底防止空数据导致的崩溃 ===
+    if (!STATE.localDB) STATE.localDB = {};
+    if (!STATE.localDB.models) STATE.localDB.models = { main_models: {} };
+    if (!STATE.localDB.models.main_models) STATE.localDB.models.main_models = {};
+    if (!STATE.localDB.contexts) STATE.localDB.contexts = {};
+    if (!STATE.localDB.images) STATE.localDB.images = {};
+    // ===========================================
+
     const models = STATE.localDB.models.main_models;
     if (Object.keys(models).length === 0) {
         tabsContainer.innerHTML = '<span style="color:#666; padding:12px; font-size:12px;">没有任何一级分类</span>';
