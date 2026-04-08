@@ -217,11 +217,15 @@ def get_combo_choices():
         if os.path.exists(DB_FILE):
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 db = json.load(f)
+                models = db.get("models", {}).get("main_models", {})
                 for ctx_id, ctx_data in db.get("contexts", {}).items():
+                    model_id = ctx_id.split('_')[0]
+                    model_name = models.get(model_id, {}).get("name", model_id)
                     for combo in ctx_data.get("combos", []):
                         combo_name = combo.get("name", "未命名组合")
-                        if combo_name not in choices:
-                            choices.append(combo_name)
+                        choice_str = f"[{model_name}] {combo_name}"
+                        if choice_str not in choices:
+                            choices.append(choice_str)
     except:
         pass
     if not choices:
@@ -255,9 +259,14 @@ class PromptComboLoaderNode:
             if os.path.exists(DB_FILE):
                 with open(DB_FILE, 'r', encoding='utf-8') as f:
                     db = json.load(f)
+                    models = db.get("models", {}).get("main_models", {})
                     for ctx_id, ctx_data in db.get("contexts", {}).items():
+                        model_id = ctx_id.split('_')[0]
+                        model_name = models.get(model_id, {}).get("name", model_id)
                         for c in ctx_data.get("combos", []):
-                            if c.get("name") == 选择组合:
+                            combo_name = c.get("name", "未命名组合")
+                            choice_str = f"[{model_name}] {combo_name}"
+                            if choice_str == 选择组合:
                                 elements = c.get("elements", [])
                                 parts = []
                                 for el in elements:
@@ -318,7 +327,7 @@ def get_group_choices():
                     for group in ctx_data.get("groups", []):
                         g_name = group.get("name", "未命名分组")
                         # 仅合并输出 "模型名|分组名"
-                        choice_str = f"{model_name}|{g_name}"
+                        choice_str = f"[{model_name}] {g_name}"
                         if choice_str not in choices:
                             choices.append(choice_str)
     except:

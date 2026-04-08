@@ -239,12 +239,18 @@ window.PM_Global.ui.openCombosModal = function() {
                 const url = await PromptAPI.uploadImage(base64, `combo_${hash}.jpg`, ctx);
                 
                 if (url) {
-                    const cbs = STATE.localDB.contexts[ctx].combos;
-                    if (cbs[STATE.currentComboEditIdx].image) await PromptAPI.deleteFile(cbs[STATE.currentComboEditIdx].image);
-                    cbs[STATE.currentComboEditIdx].image = url;
-                    await PromptAPI.saveDB(STATE.localDB); 
-                    window.PM_Global.ui.openComboEditModal(STATE.currentComboEditIdx, ctx); 
-                    window.PM_Global.ui.openCombosModal();
+                    if (STATE.currentComboEditIdx === -1) {
+                        if (STATE.tempCombo.image) await PromptAPI.deleteFile(STATE.tempCombo.image);
+                        STATE.tempCombo.image = url;
+                        window.PM_Global.ui.openComboEditModal(-1, ctx);
+                    } else {
+                        const cbs = STATE.localDB.contexts[ctx].combos;
+                        if (cbs[STATE.currentComboEditIdx].image) await PromptAPI.deleteFile(cbs[STATE.currentComboEditIdx].image);
+                        cbs[STATE.currentComboEditIdx].image = url;
+                        await PromptAPI.saveDB(STATE.localDB); 
+                        window.PM_Global.ui.openComboEditModal(STATE.currentComboEditIdx, ctx); 
+                        window.PM_Global.ui.openCombosModal();
+                    }
                 }
                 UI.hideProgress();
             }
@@ -258,7 +264,9 @@ window.PM_Global.ui.openCombosModal = function() {
     
     d.combos.forEach((c, idx) => {
         const div = document.createElement("div"); div.className = "pm-combo-card";
-        const imgHtml = c.image ? `<img src="${c.image}" style="width:100px; height:100px; object-fit:cover; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-viewer-img').src='${c.image}'; pmShowModal('pm-image-viewer');">` : `<div style="width:100px; height:100px; background:#222; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#444; font-size:12px;">无预览图</div>`;
+        // 增加 ?t=时间戳，强制打破浏览器缓存，解决裂图问题
+        const imgUrl = c.image ? `${c.image}?t=${Date.now()}` : '';
+        const imgHtml = c.image ? `<img src="${imgUrl}" style="width:100px; height:100px; object-fit:cover; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-viewer-img').src='${imgUrl}'; pmShowModal('pm-image-viewer');">` : `<div style="width:100px; height:100px; background:#222; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#444; font-size:12px;">无预览图</div>`;
         const promptStr = c.elements.map(e => e.weight != 1 ? `(${e.tag}:${e.weight})` : e.tag).join(', ');
 
         div.innerHTML = `
@@ -279,29 +287,44 @@ window.PM_Global.ui.openCombosModal = function() {
 };
 
 window.PM_Global.ui.createNewCombo = async function(ctx) {
-    STATE.localDB.contexts[ctx].combos.unshift({ name: "新组合预设_" + Date.now(), elements: [], image: null });
-    await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openCombosModal(); window.PM_Global.ui.openComboEditModal(0, ctx);
+    STATE.currentComboEditIdx = -1; 
+    STATE.tempCombo = { name: "新组合预设_" + Date.now(), elements: [], image: null };
+    window.PM_Global.ui.openComboEditModal(-1, ctx);
 };
 
 window.PM_Global.ui.openComboEditModal = function(idx, ctx) {
-    const c = getCtxData(ctx).combos[idx]; STATE.currentComboEditIdx = idx;
+    const c = idx === -1 ? STATE.tempCombo : getCtxData(ctx).combos[idx]; 
+    STATE.currentComboEditIdx = idx;
     let modal = document.getElementById("pm-combo-edit-modal");
     if (!modal) { 
         modal = document.createElement("div"); modal.id = "pm-combo-edit-modal"; modal.className = "pm-modal-overlay"; modal.style.zIndex="20002"; 
         modal.innerHTML = `
             <div class="pm-create-box" style="width: 500px;">
-                <div class="pm-create-header">
-                    <b style="color:#ff6b9d;" id="pm-cedit-title">编辑组合</b>
-                    <button class="pm-close-btn" onclick="pmHideModal('pm-combo-edit-modal')">返回</button>
-                </div>
+                <div class="pm-create-header" id="pm-cedit-header"></div>
                 <div class="pm-create-content" id="pm-cedit-content"></div>
             </div>
         `;
         document.body.appendChild(modal); 
     }
     
-    document.getElementById("pm-cedit-title").innerText = `编辑组合: ${c.name}`;
-    let imgArea = c.image ? `<img src="${c.image}" style="width:100%; height:200px; object-fit:contain; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-hidden-combo-img').click()">` : `<div style="width:100%; height:200px; background:#111; border:1px dashed #444; border-radius:8px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#777;" onclick="document.getElementById('pm-hidden-combo-img').click()">点击上传预览图</div>`;
+    const header = document.getElementById("pm-cedit-header");
+    if (idx === -1) {
+        header.innerHTML = `
+            <b style="color:#ff6b9d;">创建新组合</b>
+            <div style="display:flex; gap:10px;">
+                <button class="pm-action-btn primary" style="padding:4px 12px;" onclick="PM_Global.ui.confirmCreateCombo('${ctx}')">确定并创建</button>
+                <button class="pm-close-btn" onclick="pmHideModal('pm-combo-edit-modal')">取消</button>
+            </div>
+        `;
+    } else {
+        header.innerHTML = `
+            <b style="color:#ff6b9d;">编辑组合: ${c.name}</b>
+            <button class="pm-close-btn" onclick="pmHideModal('pm-combo-edit-modal')">返回</button>
+        `;
+    }
+
+    const imgUrl = c.image ? `${c.image}?t=${Date.now()}` : '';
+    let imgArea = c.image ? `<img src="${imgUrl}" style="width:100%; height:200px; object-fit:contain; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-hidden-combo-img').click()">` : `<div style="width:100%; height:200px; background:#111; border:1px dashed #444; border-radius:8px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#777;" onclick="document.getElementById('pm-hidden-combo-img').click()">点击上传预览图</div>`;
 
     document.getElementById("pm-cedit-content").innerHTML = `
         <input type="text" class="pm-search-input" style="width:100%; margin-bottom:15px; font-weight:bold; font-size:14px;" value="${c.name}" onchange="PM_Global.ui.updateComboName(${idx}, '${ctx}', this.value)">
@@ -328,10 +351,53 @@ window.PM_Global.ui.openComboEditModal = function(idx, ctx) {
     window.pmShowModal("pm-combo-edit-modal");
 };
 
-window.PM_Global.ui.updateComboName = async function(idx, ctx, val) { STATE.localDB.contexts[ctx].combos[idx].name = val; await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openCombosModal(); };
-window.PM_Global.ui.addComboElement = async function(idx, ctx) { STATE.localDB.contexts[ctx].combos[idx].elements.push({ tag: "新标签", weight: 1 }); await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openComboEditModal(idx, ctx); window.PM_Global.ui.openCombosModal(); };
-window.PM_Global.ui.updateComboEl = async function(cIdx, eIdx, field, val, ctx) { STATE.localDB.contexts[ctx].combos[cIdx].elements[eIdx][field] = val; await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openCombosModal(); };
-window.PM_Global.ui.removeComboEl = async function(cIdx, eIdx, ctx) { STATE.localDB.contexts[ctx].combos[cIdx].elements.splice(eIdx, 1); await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openComboEditModal(cIdx, ctx); window.PM_Global.ui.openCombosModal(); };
+window.PM_Global.ui.confirmCreateCombo = async function(ctx) {
+    if (!STATE.tempCombo.name.trim()) return alert("名称不能为空！");
+    STATE.localDB.contexts[ctx].combos.unshift(STATE.tempCombo);
+    STATE.tempCombo = null;
+    await PromptAPI.saveDB(STATE.localDB);
+    window.pmHideModal('pm-combo-edit-modal');
+    window.PM_Global.ui.openCombosModal();
+};
+
+window.PM_Global.ui.updateComboName = async function(idx, ctx, val) { 
+    if (idx === -1) { STATE.tempCombo.name = val; return; }
+    STATE.localDB.contexts[ctx].combos[idx].name = val; 
+    await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openCombosModal(); 
+};
+window.PM_Global.ui.addComboElement = async function(idx, ctx) { 
+    if (idx === -1) { STATE.tempCombo.elements.push({ tag: "新标签", weight: 1 }); window.PM_Global.ui.openComboEditModal(idx, ctx); return; }
+    STATE.localDB.contexts[ctx].combos[idx].elements.push({ tag: "新标签", weight: 1 }); 
+    await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openComboEditModal(idx, ctx); window.PM_Global.ui.openCombosModal(); 
+};
+window.PM_Global.ui.updateComboEl = async function(cIdx, eIdx, field, val, ctx) { 
+    if (cIdx === -1) { STATE.tempCombo.elements[eIdx][field] = val; return; }
+    STATE.localDB.contexts[ctx].combos[cIdx].elements[eIdx][field] = val; 
+    await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openCombosModal(); 
+};
+window.PM_Global.ui.removeComboEl = async function(cIdx, eIdx, ctx) { 
+    if (cIdx === -1) { STATE.tempCombo.elements.splice(eIdx, 1); window.PM_Global.ui.openComboEditModal(cIdx, ctx); return; }
+    STATE.localDB.contexts[ctx].combos[cIdx].elements.splice(eIdx, 1); 
+    await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openComboEditModal(cIdx, ctx); window.PM_Global.ui.openCombosModal(); 
+};
+window.PM_Global.ui.importNodeToCombo = async function(idx, ctx) {
+    let textToImport = "";
+    if (STATE.currentActiveWidget && STATE.currentActiveWidget.value) textToImport = STATE.currentActiveWidget.value;
+    else {
+        const browserNode = app.graph._nodes.find(n => n.type === "PromptBrowserNode");
+        if (browserNode) { const w = browserNode.widgets?.find(w => w.name === "prompt_text" || w.name === "输入prompt"); if (w) textToImport = w.value; }
+    }
+    if (!textToImport.trim()) return alert("节点列表中暂无 Prompt，请先在节点中添加！");
+    const parsed = UTILS.parsePromptText(textToImport);
+    const combo = idx === -1 ? STATE.tempCombo : STATE.localDB.contexts[ctx].combos[idx];
+    let addedCount = 0;
+    parsed.forEach(p => { if (!combo.elements.some(e => e.tag === p.tag)) { combo.elements.push({ tag: p.tag, weight: p.weight }); addedCount++; } });
+    if (addedCount > 0) { 
+        if (idx !== -1) { await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openCombosModal(); }
+        window.PM_Global.ui.openComboEditModal(idx, ctx); 
+    } 
+    else alert("节点列表中的标签已全部存在于当前组合中！");
+};
 window.PM_Global.ui.deleteCombo = async function(idx, ctx) {
     if (confirm("彻底删除这个组合预设吗？")) {
         const c = STATE.localDB.contexts[ctx].combos[idx];
@@ -494,58 +560,20 @@ app.registerExtension({
                 promptWidget.callback = function() { if (originalCallback) originalCallback.apply(this, arguments); if (!isUpdatingFromList) renderList(); };
                 renderList();
 
-                // === 拦截器注入：自动清洗外部脏数据 ===
+                // === 拦截器注入：强制锁定前缀，防止被 ComfyUI 或旧数据重置 ===
                 const groupWidget = this.widgets.find(w => w.name === "选择分组");
                 if (groupWidget) {
-                    if (groupWidget.options) {
-                        let realValues = groupWidget.options.values || [];
-                        Object.defineProperty(groupWidget.options, 'values', {
-                            get: function() { return realValues; },
-                            set: function(newVals) {
-                                if (!newVals || !Array.isArray(newVals)) {
-                                    realValues = newVals;
-                                    return;
-                                }
-                                const models = STATE.localDB?.models?.main_models || {};
-                                const cleanedVals = newVals.map(v => {
-                                    if (typeof v === 'string' && v.includes(' ||')) {
-                                        const parts = v.split(' ||');
-                                        const oldCtx = parts[0];
-                                        const gName = parts[1] ? parts[1].trim() : "";
-                                        const oldMId = oldCtx.split('_')[0];
-                                        const mName = models[oldMId]?.name || oldMId;
-                                        return `${mName}|${gName}`;
-                                    }
-                                    return v;
-                                });
-                                realValues = [...new Set(cleanedVals)];
-                            },
-                            configurable: true
-                        });
-                    }
-
-                    let realValue = groupWidget.value;
-                    Object.defineProperty(groupWidget, 'value', {
-                        get: function() { return realValue; },
-                        set: function(v) {
-                            if (typeof v === 'string' && v.includes(' ||')) {
-                                const parts = v.split(' ||');
-                                const oldCtx = parts[0];
-                                const gName = parts[1] ? parts[1].trim() : "";
-                                const oldMId = oldCtx.split('_')[0];
-                                const models = STATE.localDB?.models?.main_models || {};
-                                const mName = models[oldMId]?.name || oldMId;
-                                realValue = `${mName}|${gName}`;
-                            } else {
-                                realValue = v;
+                    // 安全自动修复：防止用户旧存档的单纯 "分组名" 报错，自动补全 "[模型名] 分组名"
+                    const checkMigrate = () => {
+                        if (groupWidget.value && groupWidget.options?.values) {
+                            if (!groupWidget.value.startsWith("[")) {
+                                const val = groupWidget.value.split('|').pop();
+                                const matched = groupWidget.options.values.find(opt => opt.endsWith(`] ${val}`));
+                                if (matched) { groupWidget.value = matched; app.graph.setDirtyCanvas(true); }
                             }
-                        },
-                        configurable: true
-                    });
-
-                    // 触发数据清洗
-                    if (groupWidget.options && groupWidget.options.values) groupWidget.options.values = groupWidget.options.values;
-                    if (groupWidget.value) groupWidget.value = groupWidget.value;
+                        }
+                    };
+                    setTimeout(checkMigrate, 500);
                 }
 
                 let autoRandomWidget = this.widgets.find(w => w.name === "自动随机抽取");
@@ -560,11 +588,11 @@ app.registerExtension({
                     
                     if (!currentGroupWidget || !countWidget || currentGroupWidget.value === "无可用分组_请先创建") return alert("请先创建收藏分组并选择！");
                     
-                    const parts = currentGroupWidget.value.split("|");
-                    if (parts.length < 2) return alert("分组格式无法识别！请尝试重新下拉选择该分组刷新数据。");
+                    const parts = currentGroupWidget.value.match(/^\[(.*?)\]\s*(.*)$/);
+                    if (!parts) return alert("分组格式无法识别！请尝试重新下拉选择该分组刷新数据。");
                     
-                    const m_name = parts[0];
-                    const g_name = parts[1];
+                    const m_name = parts[1];
+                    const g_name = parts[2];
                     let targetGroup = null;
                     
                     for (const ctx_id of Object.keys(STATE.localDB.contexts)) {
@@ -587,6 +615,84 @@ app.registerExtension({
                     promptWidget.value = UTILS.buildPromptText(newParsed); app.graph.setDirtyCanvas(true); renderList();
                 });
                 this.setSize([400, 260]);
+            };
+        }
+    }
+});
+
+// ==========================================
+// 4. 注册：Prompt组合预设加载器节点前端拦截
+// ==========================================
+app.registerExtension({
+    name: "PromptManager.ComboLoaderNode",
+    async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === "PromptComboLoaderNode") {
+            const onNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                if (onNodeCreated) onNodeCreated.apply(this, arguments);
+                
+                const comboWidget = this.widgets?.find(w => w.name === "选择组合");
+                if (comboWidget) {
+                    // 1. 拦截下拉列表选项的写入（免疫任何外部同步脚本的格式破坏）
+                    if (comboWidget.options) {
+                        let realValues = comboWidget.options.values || [];
+                        Object.defineProperty(comboWidget.options, 'values', {
+                            get: function() { return realValues; },
+                            set: function(newVals) {
+                                if (!newVals || !Array.isArray(newVals)) {
+                                    realValues = newVals;
+                                    return;
+                                }
+                                const db = window.PM_Global?.state?.localDB;
+                                const models = db?.models?.main_models || {};
+                                
+                                // 清洗并强行修正所有灌入选项，确保有 [模型名] 前缀
+                                realValues = newVals.map(v => {
+                                    if (typeof v === 'string' && !v.startsWith('[')) {
+                                        const rawName = v.includes('|') ? v.split('|').pop().trim() : v.trim();
+                                        if (db && db.contexts) {
+                                            for (const ctx of Object.keys(db.contexts)) {
+                                                if (db.contexts[ctx].combos?.some(c => c.name === rawName)) {
+                                                    const mId = ctx.split('_')[0];
+                                                    const mName = models[mId]?.name || mId;
+                                                    return `[${mName}] ${rawName}`;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return v;
+                                });
+                                // 剔除重复项
+                                realValues = [...new Set(realValues)];
+                            },
+                            configurable: true
+                        });
+                    }
+
+                    // 2. 拦截当前选择值的写入与读取（兼容历史旧版节点和脏数据复原）
+                    let realValue = comboWidget.value;
+                    Object.defineProperty(comboWidget, 'value', {
+                        get: function() { return realValue; },
+                        set: function(v) {
+                            if (typeof v === 'string' && !v.startsWith('[')) {
+                                const rawName = v.includes('|') ? v.split('|').pop().trim() : v.trim();
+                                if (comboWidget.options && comboWidget.options.values) {
+                                    const matched = comboWidget.options.values.find(opt => opt.endsWith(`] ${rawName}`));
+                                    if (matched) {
+                                        realValue = matched;
+                                        return;
+                                    }
+                                }
+                            }
+                            realValue = v;
+                        },
+                        configurable: true
+                    });
+
+                    // 强制触发一次清洗，立刻洗掉加载时现存的脏数据
+                    if (comboWidget.options && comboWidget.options.values) comboWidget.options.values = comboWidget.options.values;
+                    if (comboWidget.value) comboWidget.value = comboWidget.value;
+                }
             };
         }
     }

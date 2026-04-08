@@ -109,6 +109,11 @@ app.registerExtension({
                 if (onNodeCreated) onNodeCreated.apply(this, arguments);
                 const container = document.createElement("div");
                 container.style.cssText = "width: 100%; min-width: 200px; min-height: 100px; height: 100%; overflow-y: auto; background: #151515; border-radius: 8px; padding: 10px; box-sizing: border-box; display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); grid-auto-rows: max-content; align-items: start; gap: 8px;";
+                
+                // 拦截鼠标滚轮和点击事件，防止穿透到底层 ComfyUI 画布导致误触缩放或拖拽
+                container.addEventListener("wheel", (e) => { e.stopPropagation(); }, { passive: false });
+                container.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+                
                 this.addDOMWidget("viewer_grid", "HTML", container, { serialize: false, hideOnZoom: false });
                 
                 this.viewerContainer = container;
@@ -167,18 +172,32 @@ app.registerExtension({
                 
                 const img = document.createElement("img");
                 img.style.cssText = "max-width: 100%; max-height: 100%; object-fit: contain; display: none; cursor: zoom-in;";
+                
+                const placeholder = document.createElement("div");
+                placeholder.style.cssText = "color: #555; font-size: 12px; font-weight: bold; text-align: center;";
+                placeholder.innerHTML = "等待连接到<br><span style='color:#ff6b9d'>[组合预设加载器]</span>";
+
+                // 新增：图片加载成功回调
+                img.onload = () => {
+                    img.style.display = "block";
+                    placeholder.style.display = "none";
+                };
+
+                // 新增：图片加载失败（死链/404）回调
+                img.onerror = () => {
+                    img.style.display = "none";
+                    placeholder.style.display = "block";
+                    placeholder.innerHTML = "预览图读取失败<br><span style='color:#f44336; font-size:10px;'>原图可能已被删除或移动</span>";
+                };
+
                 img.addEventListener("pointerup", (e) => {
                     e.preventDefault(); e.stopPropagation();
-                    if (img.src) {
+                    if (img.src && img.style.display === "block") { // 仅在图片正常显示时允许点击放大
                         let viewer = document.getElementById("pm-standalone-viewer");
                         const fullImgEl = document.getElementById("pm-standalone-img");
                         if (viewer && fullImgEl) { fullImgEl.src = img.src; window.pmShowModal("pm-standalone-viewer"); }
                     }
                 });
-
-                const placeholder = document.createElement("div");
-                placeholder.style.cssText = "color: #555; font-size: 12px; font-weight: bold; text-align: center;";
-                placeholder.innerHTML = "等待连接到<br><span style='color:#ff6b9d'>[组合预设加载器]</span>";
                 
                 container.appendChild(img); container.appendChild(placeholder);
                 this.addDOMWidget("preview_img", "HTML", container, { serialize: false, hideOnZoom: false });
@@ -206,13 +225,23 @@ app.registerExtension({
                         } else {
                             let imgUrl = null;
                             if (STATE.localDB.contexts) {
+                                let actualComboName = currentComboName;
+                                // 提取真实的组合名（剥离 "[模型名] " 前缀）
+                                const parts = currentComboName.match(/^\[(.*?)\]\s*(.*)$/);
+                                if (parts) actualComboName = parts[2];
+                                
                                 for (const ctx of Object.values(STATE.localDB.contexts)) {
-                                    const combo = (ctx.combos || []).find(c => c.name === currentComboName);
+                                    const combo = (ctx.combos || []).find(c => c.name === actualComboName);
                                     if (combo && combo.image) { imgUrl = combo.image; break; }
                                 }
                             }
-                            if (imgUrl) { img.src = imgUrl; img.style.display = "block"; placeholder.style.display = "none"; }
-                            else { img.style.display = "none"; placeholder.style.display = "block"; placeholder.innerText = "该组合尚未上传预览图"; }
+                            if (imgUrl) { 
+                                // 添加时间戳，彻底打破各种浏览器的强制缓存机制
+                                img.src = imgUrl + "?t=" + new Date().getTime(); 
+                            }
+                            else { 
+                                img.style.display = "none"; placeholder.style.display = "block"; placeholder.innerText = "该组合尚未上传预览图"; 
+                            }
                         }
                     }
                     setTimeout(checkUpdate, 300);

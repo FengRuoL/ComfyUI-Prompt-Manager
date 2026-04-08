@@ -107,12 +107,14 @@ window.executeImportFinal = async function() {
     window.pmHideModal('pm-import-modal');
     const targetStrategy = document.querySelector('input[name="pm-import-target"]:checked').value;
     
-    // === 新增拦截逻辑：防止无分类时生成 null_xxx 文件夹 ===
-    if (targetStrategy !== 'original') {
-        if (!STATE.currentModelId || !STATE.currentModeId) {
-            alert("导入失败：当前没有任何分类环境！\n请选择【原路严格恢复】，或者先关闭窗口创建一个模型和分类。");
-            return;
-        }
+    // === 修复拦截逻辑：精确区分不同的导入策略需求 ===
+    if (targetStrategy === 'current_mode' && (!STATE.currentModelId || !STATE.currentModeId)) {
+        alert("导入失败：当前没有选中的【三级分类】！\n请先在左侧选择或创建一个三级分类。");
+        return;
+    }
+    if (targetStrategy === 'current_tab' && !STATE.currentModelId) {
+        alert("导入失败：当前没有任何【一级分类】环境！\n请先创建一个一级分类，或选择【原路严格恢复】。");
+        return;
     }
     // ====================================================
 
@@ -611,6 +613,19 @@ function openNativeBrowser() {
         `;
         document.body.appendChild(exportModal);
 
+        const backupModal = document.createElement("div"); backupModal.className = "pm-modal-overlay"; backupModal.id = "pm-backup-modal"; backupModal.style.zIndex = "20002";
+        backupModal.innerHTML = `
+            <div class="pm-create-box" style="width: 500px;">
+                <div class="pm-create-header"><b style="color:#ff6b9d;">系统备份与恢复</b><button class="pm-close-btn" onclick="pmHideModal('pm-backup-modal')">关闭</button></div>
+                <div class="pm-create-content" style="padding: 20px;">
+                    <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-bottom:15px; font-size:14px;" onclick="PM_Global.ui.createBackup()">+ 创建新备份 (包含图片及全部数据)</button>
+                    <div style="color:#ccc; font-weight:bold; margin-bottom:10px;">可用备份列表:</div>
+                    <div id="pm-backup-list" style="max-height:300px; overflow-y:auto; background:#111; border:1px solid #333; border-radius:8px; padding:10px;"></div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(backupModal);
+
         const imgViewer = document.createElement("div"); imgViewer.id = "pm-image-viewer"; imgViewer.className = "pm-modal-overlay"; imgViewer.style.zIndex = "20005";
         imgViewer.innerHTML = `<img id="pm-viewer-img" src="">`; document.body.appendChild(imgViewer); imgViewer.onclick = () => window.pmHideModal("pm-image-viewer");
 
@@ -696,6 +711,9 @@ function openNativeBrowser() {
                                 <button class="pm-action-btn" style="flex:1;" id="pm-btn-import">导入配置</button>
                                 <button class="pm-action-btn" style="flex:1;" id="pm-btn-export">导出配置</button>
                             </div>
+                            <div class="pm-btn-row">
+                                <button class="pm-action-btn primary" style="flex:1; border-color:#ff6b9d;" id="pm-btn-backup">管理系统备份</button>
+                            </div>
                             <div style="margin-top:15px; padding-top:15px; border-top: 1px dashed rgba(255,107,157,0.3);">
                                 <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; margin-bottom:5px;">图片压缩率 <span id="pm-comp-val" style="color:#ff6b9d;">${initCompPct}%</span></div>
                                 <input type="range" id="pm-comp-slider" min="10" max="100" value="${initCompPct}" style="width:100%; cursor:pointer;">
@@ -778,6 +796,62 @@ function openNativeBrowser() {
         };
         document.getElementById("pm-btn-export").onclick = () => {
             window.pmShowModal("pm-export-modal");
+        };
+        document.getElementById("pm-btn-backup").onclick = () => PM_Global.ui.openBackupModal();
+
+        window.PM_Global.ui.openBackupModal = async function() {
+            window.pmShowModal("pm-backup-modal");
+            const list = document.getElementById("pm-backup-list");
+            list.innerHTML = "<div style='color:#666; text-align:center;'>加载中...</div>";
+            try {
+                const res = await fetch("/api/prompt-manager/backup/list");
+                const data = await res.json();
+                if (data.success) {
+                    list.innerHTML = "";
+                    if (data.backups.length === 0) list.innerHTML = "<div style='color:#666; text-align:center;'>暂无备份</div>";
+                    data.backups.forEach(b => {
+                        const dateStr = new Date(b.time * 1000).toLocaleString();
+                        const item = document.createElement("div");
+                        item.className = "pm-list-item";
+                        item.style.padding = "10px";
+                        item.innerHTML = `
+                            <div>
+                                <div style="color:#ddd; font-weight:bold;">${b.name}</div>
+                                <div style="color:#888; font-size:11px;">大小: ${b.size} MB | 时间: ${dateStr}</div>
+                            </div>
+                            <button class="pm-text-btn danger" onclick="PM_Global.ui.restoreBackup('${b.name}')">恢复此备份</button>
+                        `;
+                        list.appendChild(item);
+                    });
+                }
+            } catch(e) { list.innerHTML = "<div style='color:#f44336; text-align:center;'>加载失败</div>"; }
+        };
+
+        window.PM_Global.ui.createBackup = async function() {
+            const name = prompt("请输入备份名称 (留空则默认按当前时间命名):");
+            if (name === null) return;
+            UI.updateProgress("正在创建备份...", "打包图片与配置，这可能需要一点时间");
+            try {
+                const res = await fetch("/api/prompt-manager/backup/create", { method: 'POST', body: JSON.stringify({name: name || undefined}) });
+                const data = await res.json();
+                UI.hideProgress();
+                if (data.success) { alert("备份成功！文件已存入 backup 文件夹。"); PM_Global.ui.openBackupModal(); }
+                else alert("备份失败: " + data.error);
+            } catch(e) { UI.hideProgress(); alert("请求失败"); }
+        };
+
+        window.PM_Global.ui.restoreBackup = async function(filename) {
+            if (!confirm("⚠ 危险操作警告 ⚠\n确定要恢复此备份吗？\n当前的【所有图片和提示词配置】将被格式化并彻底覆盖！")) return;
+            UI.updateProgress("正在恢复备份...", "正在解压文件，请绝对不要关闭窗口！");
+            try {
+                const res = await fetch("/api/prompt-manager/backup/restore", { method: 'POST', body: JSON.stringify({filename}) });
+                const data = await res.json();
+                UI.hideProgress();
+                if (data.success) { 
+                    alert("恢复成功！ComfyUI 页面即将刷新加载新数据。"); 
+                    location.reload(); 
+                } else { alert("恢复失败: " + data.error); }
+            } catch(e) { UI.hideProgress(); alert("请求失败"); }
         };
         document.getElementById("pm-btn-import").onclick = () => document.getElementById("pm-hidden-import").click();
         document.getElementById("pm-hidden-import").onchange = (e) => { if (e.target.files.length > 0) handleImportFile(e.target.files[0]); e.target.value = ''; };
