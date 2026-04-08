@@ -10,16 +10,25 @@ export const PromptAPI = {
         }
     },
     
+    saveTimer: null,
     async saveDB(dbData) {
-        try {
-            await fetch('/api/prompt-manager/db', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dbData)
-            });
-        } catch (e) {
-            console.error('保存数据库失败', e);
-        }
+        // 使用 500ms 防抖，避免连续修改导致的高频全量 IO 写入卡顿
+        if (this.saveTimer) clearTimeout(this.saveTimer);
+        return new Promise((resolve) => {
+            this.saveTimer = setTimeout(async () => {
+                try {
+                    await fetch('/api/prompt-manager/db', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(dbData)
+                    });
+                    resolve();
+                } catch (e) {
+                    console.error('保存数据库失败', e);
+                    resolve();
+                }
+            }, 500);
+        });
     },
 
     async uploadImage(base64Data, filename, subfolder) {

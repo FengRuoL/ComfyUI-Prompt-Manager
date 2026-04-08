@@ -406,21 +406,7 @@ window.PM_Global.ui.deleteCombo = async function(idx, ctx) {
     }
 };
 
-window.PM_Global.ui.importNodeToCombo = async function(idx, ctx) {
-    let textToImport = "";
-    if (STATE.currentActiveWidget && STATE.currentActiveWidget.value) textToImport = STATE.currentActiveWidget.value;
-    else {
-        const browserNode = app.graph._nodes.find(n => n.type === "PromptBrowserNode");
-        if (browserNode) { const w = browserNode.widgets?.find(w => w.name === "prompt_text" || w.name === "输入prompt"); if (w) textToImport = w.value; }
-    }
-    if (!textToImport.trim()) return alert("节点列表中暂无 Prompt，请先在节点中添加！");
-    const parsed = UTILS.parsePromptText(textToImport);
-    const combo = STATE.localDB.contexts[ctx].combos[idx];
-    let addedCount = 0;
-    parsed.forEach(p => { if (!combo.elements.some(e => e.tag === p.tag)) { combo.elements.push({ tag: p.tag, weight: p.weight }); addedCount++; } });
-    if (addedCount > 0) { await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openComboEditModal(idx, ctx); window.PM_Global.ui.openCombosModal(); } 
-    else alert("节点列表中的标签已全部存在于当前组合中！");
-};
+// （已删除导致冲突的重复定义代码块）
 
 window.PM_Global.ui.exportComboToBrowser = function(idx, ctx) {
     const c = STATE.localDB.contexts[ctx].combos[idx];

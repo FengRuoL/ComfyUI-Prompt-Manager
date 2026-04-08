@@ -119,8 +119,10 @@ app.registerExtension({
                 this.viewerContainer = container;
                 this.lastPrompt = null;
                 this.forceRefreshViewer = () => { this.lastPrompt = null; };
+                this.isDestroyed = false; // 标记生命周期
                 
                 const checkUpdate = async () => {
+                    if (this.isDestroyed) return; // 节点删除时彻底终止轮询
                     if (this.flags?.collapsed || !this.graph) { setTimeout(checkUpdate, 500); return; }
                     let currentVal = "";
                     const input = this.inputs?.find(inp => inp.name === "prompt_text" || inp.name === "prompt字符串");
@@ -140,6 +142,14 @@ app.registerExtension({
                     }
                     setTimeout(checkUpdate, 500);
                 };
+                
+                // 绑定销毁事件
+                const onRemoved = this.onRemoved;
+                this.onRemoved = function() {
+                    this.isDestroyed = true;
+                    if (onRemoved) onRemoved.apply(this, arguments);
+                };
+
                 checkUpdate();
                 this.setSize([400, 300]);
             };
@@ -203,7 +213,10 @@ app.registerExtension({
                 this.addDOMWidget("preview_img", "HTML", container, { serialize: false, hideOnZoom: false });
                 
                 this.lastCombo = null;
+                this.isDestroyed = false; // 标记生命周期
+
                 const checkUpdate = () => {
+                    if (this.isDestroyed) return; // 节点删除时彻底终止轮询
                     if (!this.graph || this.flags?.collapsed) { setTimeout(checkUpdate, 500); return; }
                     let currentComboName = null;
                     const input = this.inputs?.find(inp => inp.name === "图像" || inp.type === "IMAGE");
@@ -226,7 +239,6 @@ app.registerExtension({
                             let imgUrl = null;
                             if (STATE.localDB.contexts) {
                                 let actualComboName = currentComboName;
-                                // 提取真实的组合名（剥离 "[模型名] " 前缀）
                                 const parts = currentComboName.match(/^\[(.*?)\]\s*(.*)$/);
                                 if (parts) actualComboName = parts[2];
                                 
@@ -236,7 +248,6 @@ app.registerExtension({
                                 }
                             }
                             if (imgUrl) { 
-                                // 添加时间戳，彻底打破各种浏览器的强制缓存机制
                                 img.src = imgUrl + "?t=" + new Date().getTime(); 
                             }
                             else { 
@@ -246,6 +257,14 @@ app.registerExtension({
                     }
                     setTimeout(checkUpdate, 300);
                 };
+
+                // 绑定销毁事件
+                const onRemoved = this.onRemoved;
+                this.onRemoved = function() {
+                    this.isDestroyed = true;
+                    if (onRemoved) onRemoved.apply(this, arguments);
+                };
+
                 checkUpdate();
                 this.setSize([280, 280]);
             };

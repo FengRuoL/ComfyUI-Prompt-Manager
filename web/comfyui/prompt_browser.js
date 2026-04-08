@@ -431,6 +431,18 @@ window.PM_Global.ui.executeExport = async function() {
 };
 
 // === 3. 大部分业务渲染逻辑 ===
+window.PM_Global.ui.toggleSidebarSection = function(id, el) {
+    const content = document.getElementById(id);
+    const arrow = el.querySelector('span:nth-child(2)');
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        if(arrow) arrow.style.transform = 'rotate(0deg)';
+    } else {
+        content.style.display = 'none';
+        if(arrow) arrow.style.transform = 'rotate(-90deg)';
+    }
+};
+
 function openNativeBrowser() {
     let container = document.getElementById("pm-native-modal");
     if (!document.getElementById("pm-native-style")) {
@@ -695,34 +707,52 @@ function openNativeBrowser() {
                     <div class="pm-sidebar-scroll" id="pm-sidebar-scroll"></div>
                     <div class="pm-sidebar-footer">
                         <div class="pm-sidebar-group">
-                            <div class="pm-sidebar-label">工作区与操作</div>
-                            <div class="pm-btn-row">
-                                <button class="pm-action-btn" style="flex:1; color:#f8961e; border-color:#835213;" onclick="PM_Global.ui.openGroupsModal()">收藏管理</button>
-                                <button class="pm-action-btn" style="flex:1; color:#a78bfa; border-color:#534383;" onclick="PM_Global.ui.openCombosModal()">组合管理</button>
+                            <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-workspace', this)">
+                                <span>工作区与操作</span><span style="transition:0.2s; transform:rotate(0deg); font-size:10px; color:#ff6b9d;">▼</span>
                             </div>
-                            <div class="pm-btn-row">
-                                <button class="pm-action-btn primary" style="flex:1;" id="pm-btn-add-card">新建卡片</button>
-                                <button class="pm-action-btn" style="flex:1;" id="pm-btn-batch">批量操作</button>
+                            <div id="sect-workspace">
+                                <div class="pm-btn-row">
+                                    <button class="pm-action-btn" style="flex:1; color:#f8961e; border-color:#835213;" onclick="PM_Global.ui.openGroupsModal()">收藏管理</button>
+                                    <button class="pm-action-btn" style="flex:1; color:#a78bfa; border-color:#534383;" onclick="PM_Global.ui.openCombosModal()">组合管理</button>
+                                </div>
+                                <div class="pm-btn-row">
+                                    <button class="pm-action-btn primary" style="flex:1;" id="pm-btn-add-card">新建卡片</button>
+                                    <button class="pm-action-btn" style="flex:1;" id="pm-btn-batch">批量操作</button>
+                                </div>
                             </div>
                         </div>
                         <div class="pm-sidebar-group">
-                            <div class="pm-sidebar-label">数据与备份</div>
-                            <div class="pm-btn-row">
-                                <button class="pm-action-btn" style="flex:1;" id="pm-btn-import">导入配置</button>
-                                <button class="pm-action-btn" style="flex:1;" id="pm-btn-export">导出配置</button>
+                            <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-backup', this)">
+                                <span>数据与备份</span><span style="transition:0.2s; transform:rotate(0deg); font-size:10px; color:#ff6b9d;">▼</span>
                             </div>
-                            <div class="pm-btn-row">
-                                <button class="pm-action-btn primary" style="flex:1; border-color:#ff6b9d;" id="pm-btn-backup">管理系统备份</button>
+                            <div id="sect-backup">
+                                <div class="pm-btn-row">
+                                    <button class="pm-action-btn" style="flex:1;" id="pm-btn-import">导入配置</button>
+                                    <button class="pm-action-btn" style="flex:1;" id="pm-btn-export">导出配置</button>
+                                </div>
+                                <div class="pm-btn-row">
+                                    <button class="pm-action-btn primary" style="flex:1; border-color:#ff6b9d;" id="pm-btn-backup">管理系统备份</button>
+                                </div>
                             </div>
-                            <div style="margin-top:15px; padding-top:15px; border-top: 1px dashed rgba(255,107,157,0.3);">
-                                <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; margin-bottom:5px;">图片压缩率 <span id="pm-comp-val" style="color:#ff6b9d;">${initCompPct}%</span></div>
+                        </div>
+                        <div class="pm-sidebar-group" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
+                            <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-settings', this)">
+                                <span>图片压缩设置</span><span style="transition:0.2s; transform:rotate(0deg); font-size:10px; color:#ff6b9d;">▼</span>
+                            </div>
+                            <div id="sect-settings">
+                                <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>压缩率</span> <span id="pm-comp-val" style="color:#ff6b9d;">${initCompPct}%</span></div>
                                 <input type="range" id="pm-comp-slider" min="10" max="100" value="${initCompPct}" style="width:100%; cursor:pointer;">
-                                <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; margin-top:10px; margin-bottom:5px;">最大宽度 <input type="number" id="pm-width-input" value="${initMaxWidth}" min="100" max="4096" style="width:55px; background:#111; border:1px solid #444; color:#ff6b9d; border-radius:4px; text-align:center;"> px</div>
+                                <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; margin-bottom:5px;">
+                                    <span>最大宽度</span>
+                                    <div style="display:flex; align-items:center; gap:4px; color:#aaa; font-size:12px; font-weight:normal;">
+                                        <input type="number" id="pm-width-input" value="${initMaxWidth}" min="100" max="4096" style="width:55px; background:#111; border:1px solid #444; color:#ff6b9d; border-radius:4px; text-align:center;"> px
+                                    </div>
+                                </div>
                                 <input type="range" id="pm-width-slider" min="100" max="4096" step="10" value="${initMaxWidth}" style="width:100%; cursor:pointer;">
                             </div>
-                            <input type="file" id="pm-hidden-import" accept=".json" style="display:none;">
-                            <input type="file" id="pm-hidden-append-img" multiple accept="image/*" style="display:none;">
                         </div>
+                        <input type="file" id="pm-hidden-import" accept=".json" style="display:none;">
+                        <input type="file" id="pm-hidden-append-img" multiple accept="image/*" style="display:none;">
                     </div>
                 </div>
                 <div class="pm-main-container">

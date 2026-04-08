@@ -147,7 +147,10 @@ Object.assign(window.PM_Global.utils, {
                 if (!comboChoices.includes(combo_name)) comboChoices.push(combo_name);
             });
             (ctx_data.groups || []).forEach(g => {
-                groupChoices.push(`${ctx_id} || ${g.name || "未命名分组"}`);
+                const model_id = ctx_id.split('_')[0];
+                const model_name = models[model_id]?.name || model_id;
+                const choice_str = `[${model_name}] ${g.name || "未命名分组"}`;
+                if (!groupChoices.includes(choice_str)) groupChoices.push(choice_str);
             });
         }
         if (comboChoices.length === 0) comboChoices = ["无可用组合_请先创建"];
