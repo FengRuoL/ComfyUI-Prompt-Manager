@@ -59,8 +59,20 @@ window.executeEditCard = async function() {
 };
 
 window.PM_Global.ui.openGroupSelectModal = function(item, ctx) {
-    const d = STATE.localDB.contexts[ctx];
+    // 核心修复：精准提取带有时间戳的完整一级分类ID
+    let mId = null;
+    if (STATE.localDB.models && STATE.localDB.models.main_models) {
+        for (const key of Object.keys(STATE.localDB.models.main_models)) {
+            if (ctx.startsWith(key + '_')) { mId = key; break; }
+        }
+    }
+    if (!mId) mId = STATE.currentModelId || ctx.split('_')[0]; // 兜底
+    
+    const globalCtx = `${mId}_global`;
+    if (!STATE.localDB.contexts[globalCtx]) STATE.localDB.contexts[globalCtx] = { items: [], metadata: {}, groups: [], combos: [] };
+    const d = STATE.localDB.contexts[globalCtx];
     if(!d.groups) d.groups = [];
+    
     let modal = document.getElementById("pm-group-select-modal");
     if (!modal) {
         modal = document.createElement("div"); modal.id = "pm-group-select-modal"; modal.className = "pm-modal-overlay";
@@ -86,7 +98,7 @@ window.PM_Global.ui.openGroupSelectModal = function(item, ctx) {
         const div = document.createElement("div"); div.className = "pm-list-item";
         div.innerHTML = `
             <label style="cursor:pointer; display:flex; align-items:center; gap:10px;">
-                <input type="checkbox" ${has?'checked':''} onchange="PM_Global.ui.toggleGroupItem(${idx}, '${item}', '${ctx}', this.checked)">
+                <input type="checkbox" ${has?'checked':''} onchange="PM_Global.ui.toggleGroupItem(${idx}, '${item}', '${globalCtx}', this.checked)">
                 <span style="color:#ccc; font-weight:bold;">${g.name}</span>
             </label>
             <span style="color:#666; font-size:12px;">${g.items.length} 项</span>
@@ -96,8 +108,8 @@ window.PM_Global.ui.openGroupSelectModal = function(item, ctx) {
     window.pmShowModal("pm-group-select-modal");
 };
 
-window.PM_Global.ui.toggleGroupItem = async function(gIdx, item, ctx, isChecked) {
-    const d = STATE.localDB.contexts[ctx]; const g = d.groups[gIdx];
+window.PM_Global.ui.toggleGroupItem = async function(gIdx, item, globalCtx, isChecked) {
+    const d = STATE.localDB.contexts[globalCtx]; const g = d.groups[gIdx];
     if (isChecked && !g.items.includes(item)) g.items.push(item);
     else if (!isChecked && g.items.includes(item)) g.items = g.items.filter(x => x !== item);
     await PromptAPI.saveDB(STATE.localDB); renderGrid(); 
@@ -723,9 +735,9 @@ function openNativeBrowser() {
                         </div>
                         <div class="pm-sidebar-group">
                             <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-backup', this)">
-                                <span>数据与备份</span><span style="transition:0.2s; transform:rotate(0deg); font-size:10px; color:#ff6b9d;">▼</span>
+                                <span>数据与备份</span><span style="transition:0.2s; transform:rotate(-90deg); font-size:10px; color:#ff6b9d;">▼</span>
                             </div>
-                            <div id="sect-backup">
+                            <div id="sect-backup" style="display:none;">
                                 <div class="pm-btn-row">
                                     <button class="pm-action-btn" style="flex:1;" id="pm-btn-import">导入配置</button>
                                     <button class="pm-action-btn" style="flex:1;" id="pm-btn-export">导出配置</button>
@@ -737,9 +749,9 @@ function openNativeBrowser() {
                         </div>
                         <div class="pm-sidebar-group" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
                             <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-settings', this)">
-                                <span>图片压缩设置</span><span style="transition:0.2s; transform:rotate(0deg); font-size:10px; color:#ff6b9d;">▼</span>
+                                <span>图片压缩设置</span><span style="transition:0.2s; transform:rotate(-90deg); font-size:10px; color:#ff6b9d;">▼</span>
                             </div>
-                            <div id="sect-settings">
+                            <div id="sect-settings" style="display:none;">
                                 <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>压缩率</span> <span id="pm-comp-val" style="color:#ff6b9d;">${initCompPct}%</span></div>
                                 <input type="range" id="pm-comp-slider" min="10" max="100" value="${initCompPct}" style="width:100%; cursor:pointer;">
                                 <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; margin-bottom:5px;">
@@ -1199,7 +1211,18 @@ function renderGrid() {
         card.appendChild(tagsWrap);
 
         const actionsWrap = document.createElement("div"); actionsWrap.className = "pm-card-actions";
-        const inGrp = STATE.localDB.contexts[ctx]?.groups?.some(g => g.items.includes(item));
+        
+        // 核心修复：精准提取带有时间戳的一级分类ID用于判断高亮状态
+        let mIdForCard = null;
+        if (STATE.localDB.models && STATE.localDB.models.main_models) {
+            for (const key of Object.keys(STATE.localDB.models.main_models)) {
+                if (ctx.startsWith(key + '_')) { mIdForCard = key; break; }
+            }
+        }
+        if (!mIdForCard) mIdForCard = STATE.currentModelId || ctx.split('_')[0];
+        
+        const globalCtxForCard = `${mIdForCard}_global`;
+        const inGrp = STATE.localDB.contexts[globalCtxForCard]?.groups?.some(g => g.items.includes(item));
         const favBtn = document.createElement("button"); favBtn.className = `pm-text-btn ${inGrp ? 'warning' : ''}`; favBtn.innerText = inGrp ? "已收藏" : "收藏";
         favBtn.onclick = (e) => { e.stopPropagation(); window.PM_Global.ui.openGroupSelectModal(item, ctx); }; actionsWrap.appendChild(favBtn);
 

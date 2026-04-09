@@ -110,52 +110,53 @@ class PromptImportNode:
     CATEGORY = "Prompt Manager"
 
     def save_images(self, 图像, prompt字符串, 导入到模式, 目标存储模式, 导入到组合, 压缩率, 最大宽度):
-        if 导入到模式 and 导入到组合:
-            raise ValueError("【Prompt管理器报错】'导入到模式' 和 '导入到组合' 不能同时开启！")
-        if not 导入到模式 and not 导入到组合:
-            return () 
+        if 导入到模式 and 导入到组合: raise ValueError("【Prompt管理器报错】'导入到模式' 和 '导入到组合' 不能同时开启！")
+        if not 导入到模式 and not 导入到组合: return () 
 
         safe_name = prompt字符串.strip()
         if not safe_name: return ()
         
-        if 导入到模式:
-            if 目标存储模式 == "未建任何模式_请先创建" or not 目标存储模式:
-                raise ValueError("【Prompt管理器报错】无法导入到模式！请先打开Prompt浏览器节点，至少创建一个模型、分类和模式！")
-
-        file_safe_name = "".join([c for c in safe_name if c.isalnum()]).rstrip()[:20]
-
         if os.path.exists(DB_FILE):
             with open(DB_FILE, 'r', encoding='utf-8') as f: db_data = json.load(f)
-        else:
-            db_data = {"contexts": {}, "images": {}}
-
-        target_ctx = None
-        models = db_data.get("models", {}).get("main_models", {})
-        for model_id, model_data in models.items():
-            m_name = model_data.get("name", model_id)
-            cats = {c.get("id"): c.get("name") for c in model_data.get("categories", [])}
-            for mode_id, mode_data in model_data.get("modes", {}).items():
-                c_name = cats.get(mode_data.get("group", "custom"), "未分类")
-                md_name = mode_data.get("name", mode_id)
-                check_str = f"[{m_name}] {c_name} = {md_name}"
-                if check_str == 目标存储模式:
-                    target_ctx = f"{model_id}_{mode_id}"
-                    break
-            if target_ctx: break
+        else: db_data = {"contexts": {}, "images": {}}
         
-        if not target_ctx:
-            target_ctx = list(db_data.get("contexts", {}).keys())[0] if db_data.get("contexts") else "custom_custom"
-            
+        target_ctx = None
+        if 导入到模式:
+            if 目标存储模式 == "未建任何模式_请先创建" or not 目标存储模式:
+                raise ValueError("【Prompt管理器报错】无法导入到模式！请先打开Prompt浏览器创建！")
+            models = db_data.get("models", {}).get("main_models", {})
+            for m_id, m_data in models.items():
+                m_name = m_data.get("name", m_id)
+                cats = {c.get("id"): c.get("name") for c in m_data.get("categories", [])}
+                for md_id, md_data in m_data.get("modes", {}).items():
+                    c_name = cats.get(md_data.get("group", "custom"), "未分类")
+                    if f"[{m_name}] {c_name} = {md_data.get('name', md_id)}" == 目标存储模式:
+                        target_ctx = f"{m_id}_{md_id}"
+                        break
+                if target_ctx: break
+        
+        if 导入到组合:
+            # 导入到组合直接寻找一级分类并放入全局 ctx 中
+            models = db_data.get("models", {}).get("main_models", {})
+            m_id = list(models.keys())[0] if models else "custom"
+            if 目标存储模式 and 目标存储模式 != "未建任何模式_请先创建":
+                for k, v in models.items():
+                    if f"[{v.get('name', k)}]" in 目标存储模式: m_id = k; break
+            target_ctx = f"{m_id}_global"
+
+        if not target_ctx: target_ctx = "custom_custom"
         ctx = target_ctx
 
         if "contexts" not in db_data: db_data["contexts"] = {}
         if "images" not in db_data: db_data["images"] = {}
-        if ctx not in db_data["contexts"]:
-            db_data["contexts"][ctx] = {"items": [], "metadata": {}, "cart": [], "groups": [], "combos": []}
+        if ctx not in db_data["contexts"]: db_data["contexts"][ctx] = {"items": [], "metadata": {}, "groups": [], "combos": []}
             
         ctx_data = db_data["contexts"][ctx]
         target_dir = os.path.join(DATA_DIR, ctx)
         os.makedirs(target_dir, exist_ok=True)
+        
+        file_safe_name = "".join([c for c in safe_name if c.isalnum()]).rstrip()[:20]
+        prefix = "combo" if 导入到组合 else "gen"
         
         saved_urls = []
         for i, image_tensor in enumerate(图像):
@@ -166,7 +167,7 @@ class PromptImportNode:
                 new_h = int(h * (最大宽度 / w))
                 img_pil = img_pil.resize((最大宽度, new_h), Image.LANCZOS)
             
-            img_name = f"gen_{file_safe_name}_{torch.randint(0, 100000, (1,)).item()}.jpg"
+            img_name = f"{prefix}_{file_safe_name}_{torch.randint(0, 100000, (1,)).item()}.jpg"
             img_path = os.path.join(target_dir, img_name)
             img_pil.save(img_path, format="JPEG", quality=int(压缩率 * 100))
             saved_urls.append(f"/prompt_data/{ctx}/{img_name}")
@@ -218,18 +219,15 @@ def get_combo_choices():
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 db = json.load(f)
                 models = db.get("models", {}).get("main_models", {})
-                for ctx_id, ctx_data in db.get("contexts", {}).items():
-                    model_id = ctx_id.split('_')[0]
-                    model_name = models.get(model_id, {}).get("name", model_id)
-                    for combo in ctx_data.get("combos", []):
-                        combo_name = combo.get("name", "未命名组合")
-                        choice_str = f"[{model_name}] {combo_name}"
-                        if choice_str not in choices:
-                            choices.append(choice_str)
-    except:
-        pass
-    if not choices:
-        choices = ["无可用组合_请先创建"]
+                for model_id, model_data in models.items():
+                    model_name = model_data.get("name", model_id)
+                    global_ctx = f"{model_id}_global"
+                    if global_ctx in db.get("contexts", {}):
+                        for combo in db["contexts"][global_ctx].get("combos", []):
+                            choice_str = f"[{model_name}] {combo.get('name', '未命名组合')}"
+                            if choice_str not in choices: choices.append(choice_str)
+    except: pass
+    if not choices: choices = ["无可用组合_请先创建"]
     return choices
 
 # ==========================================
@@ -260,9 +258,10 @@ class PromptComboLoaderNode:
                 with open(DB_FILE, 'r', encoding='utf-8') as f:
                     db = json.load(f)
                     models = db.get("models", {}).get("main_models", {})
-                    for ctx_id, ctx_data in db.get("contexts", {}).items():
-                        model_id = ctx_id.split('_')[0]
-                        model_name = models.get(model_id, {}).get("name", model_id)
+                    for model_id, model_data in models.items():
+                        model_name = model_data.get("name", model_id)
+                        global_ctx = f"{model_id}_global"
+                        ctx_data = db.get("contexts", {}).get(global_ctx, {})
                         for c in ctx_data.get("combos", []):
                             combo_name = c.get("name", "未命名组合")
                             choice_str = f"[{model_name}] {combo_name}"
@@ -321,19 +320,15 @@ def get_group_choices():
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 db = json.load(f)
                 models = db.get("models", {}).get("main_models", {})
-                for ctx_id, ctx_data in db.get("contexts", {}).items():
-                    model_id = ctx_id.split('_')[0]
-                    model_name = models.get(model_id, {}).get("name", model_id)
-                    for group in ctx_data.get("groups", []):
-                        g_name = group.get("name", "未命名分组")
-                        # 仅合并输出 "模型名|分组名"
-                        choice_str = f"[{model_name}] {g_name}"
-                        if choice_str not in choices:
-                            choices.append(choice_str)
-    except:
-        pass
-    if not choices:
-        choices = ["无可用分组_请先创建"]
+                for model_id, model_data in models.items():
+                    model_name = model_data.get("name", model_id)
+                    global_ctx = f"{model_id}_global"
+                    if global_ctx in db.get("contexts", {}):
+                        for group in db["contexts"][global_ctx].get("groups", []):
+                            choice_str = f"[{model_name}] {group.get('name', '未命名分组')}"
+                            if choice_str not in choices: choices.append(choice_str)
+    except: pass
+    if not choices: choices = ["无可用分组_请先创建"]
     return choices
 
 # ==========================================

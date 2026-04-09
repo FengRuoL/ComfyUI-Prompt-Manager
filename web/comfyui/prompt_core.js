@@ -73,6 +73,7 @@ Object.assign(window.PM_Global.utils, {
         let db = await PromptAPI.getDB();
         let needSave = false;
         if (db.contexts) {
+            // 1. 旧版备注转标签逻辑
             for (const ctx in db.contexts) {
                 const metadata = db.contexts[ctx].metadata;
                 if (metadata) {
@@ -83,8 +84,7 @@ Object.assign(window.PM_Global.utils, {
                                 if (!metadata[item].tags) metadata[item].tags = [];
                                 if (!metadata[item].tags.includes(remarkVal)) metadata[item].tags.push(remarkVal);
                             }
-                            delete metadata[item].remark;
-                            needSave = true;
+                            delete metadata[item].remark; needSave = true;
                         }
                     }
                 }
@@ -92,6 +92,101 @@ Object.assign(window.PM_Global.utils, {
         }
         if (needSave) await PromptAPI.saveDB(db);
         return db;
+    },
+
+    async manualMigrateData() {
+        try {
+            // 修复未定义错误：正确引用全局 UI 对象
+            const UI = window.PM_Global.ui;
+            let db = STATE.localDB;
+            let needSave = false;
+            let migratedCount = 0;
+            
+            UI.updateProgress("正在执行格式迁移...", "查找并转移旧数据...");
+
+            for (const ctx in db.contexts) {
+                if (ctx.endsWith('_global')) continue;
+                
+                let mId = null;
+                if (db.models && db.models.main_models) {
+                    for (const key of Object.keys(db.models.main_models)) {
+                        if (ctx.startsWith(key + '_')) { mId = key; break; }
+                    }
+                    if (!mId) {
+                        const wrongName = ctx.split('_')[0];
+                        for (const [key, val] of Object.entries(db.models.main_models)) {
+                            if (val.name === wrongName || key.startsWith(wrongName + '_')) { mId = key; break; }
+                        }
+                    }
+                }
+                if (!mId) mId = ctx.split('_')[0];
+                const globalCtx = `${mId}_global`;
+
+                const cData = db.contexts[ctx];
+                if ((cData.groups && cData.groups.length > 0) || (cData.combos && cData.combos.length > 0)) {
+                    if (!db.contexts[globalCtx]) db.contexts[globalCtx] = { items: [], metadata: {}, groups: [], combos: [] };
+                    if (!db.contexts[globalCtx].groups) db.contexts[globalCtx].groups = [];
+                    if (!db.contexts[globalCtx].combos) db.contexts[globalCtx].combos = [];
+                    
+                    if (cData.groups && cData.groups.length > 0) {
+                        cData.groups.forEach(g => {
+                            const ext = db.contexts[globalCtx].groups.find(x => x.name === g.name);
+                            if (ext) ext.items = [...new Set([...ext.items, ...g.items])]; 
+                            else db.contexts[globalCtx].groups.push(g);
+                            migratedCount++;
+                        });
+                        cData.groups = []; needSave = true;
+                    }
+                    
+                    if (cData.combos && cData.combos.length > 0) {
+                        for (let c of cData.combos) {
+                            if (c.image && c.image.includes('/gen_')) {
+                                try {
+                                    // 修复 this 引用丢失的风险
+                                    const b64 = await window.PM_Global.utils.urlToBase64(c.image);
+                                    const oldUrl = c.image;
+                                    const newName = oldUrl.split('/').pop().replace('gen_', 'combo_');
+                                    const newUrl = await PromptAPI.uploadImage(b64, newName, globalCtx);
+                                    if (newUrl) {
+                                        c.image = newUrl;
+                                        await PromptAPI.deleteFile(oldUrl); 
+                                    }
+                                } catch(e) { console.warn("迁移图片失败", e); }
+                            }
+                            
+                            if (!db.contexts[globalCtx].combos.some(x => x.name === c.name)) {
+                                db.contexts[globalCtx].combos.push(c);
+                                migratedCount++;
+                            }
+                        }
+                        cData.combos = []; needSave = true;
+                    }
+                }
+            }
+            
+            if (needSave) {
+                await PromptAPI.saveDB(db);
+                // 强制刷新节点列表缓存
+                window.PM_Global.utils.syncImportNodeWidgets();
+            }
+            UI.hideProgress();
+            
+            if (migratedCount > 0) {
+                alert(`迁移成功！共找回并规范了 ${migratedCount} 个旧数据。\n请刷新或重新打开界面查看。`);
+                window.pmHideModal('pm-groups-modal'); 
+                window.pmHideModal('pm-combos-modal');
+                // 刷新界面
+                if(window.PM_Global.ui.renderGrid) window.PM_Global.ui.renderGrid();
+            } else {
+                alert("检查完毕，没有发现任何遗留的旧格式数据。");
+            }
+        } catch (error) {
+            console.error("迁移执行出错: ", error);
+            if (window.PM_Global.ui && window.PM_Global.ui.hideProgress) {
+                window.PM_Global.ui.hideProgress();
+            }
+            alert("执行过程中发生错误，请按 F12 查看控制台。");
+        }
     },
 
     async urlToBase64(url) {
@@ -141,17 +236,14 @@ Object.assign(window.PM_Global.utils, {
         if (choices.length === 0) choices = ["未建任何模式_请先创建"];
 
         let comboChoices = [], groupChoices = [];
-        for (const [ctx_id, ctx_data] of Object.entries(STATE.localDB.contexts || {})) {
-            (ctx_data.combos || []).forEach(c => {
-                const combo_name = c.name || "未命名组合";
-                if (!comboChoices.includes(combo_name)) comboChoices.push(combo_name);
-            });
-            (ctx_data.groups || []).forEach(g => {
-                const model_id = ctx_id.split('_')[0];
-                const model_name = models[model_id]?.name || model_id;
-                const choice_str = `[${model_name}] ${g.name || "未命名分组"}`;
-                if (!groupChoices.includes(choice_str)) groupChoices.push(choice_str);
-            });
+        for (const [model_id, model_data] of Object.entries(models)) {
+            const m_name = model_data.name || model_id;
+            const global_ctx = `${model_id}_global`;
+            if (STATE.localDB.contexts && STATE.localDB.contexts[global_ctx]) {
+                const gData = STATE.localDB.contexts[global_ctx];
+                (gData.groups || []).forEach(g => groupChoices.push(`[${m_name}] ${g.name || "未命名分组"}`));
+                (gData.combos || []).forEach(c => comboChoices.push(`[${m_name}] ${c.name || "未命名组合"}`));
+            }
         }
         if (comboChoices.length === 0) comboChoices = ["无可用组合_请先创建"];
         if (groupChoices.length === 0) groupChoices = ["无可用分组_请先创建"];

@@ -237,14 +237,17 @@ app.registerExtension({
                             placeholder.innerHTML = "等待连接到<br><span style='color:#ff6b9d'>[组合预设加载器]</span>";
                         } else {
                             let imgUrl = null;
-                            if (STATE.localDB.contexts) {
-                                let actualComboName = currentComboName;
+                            if (STATE.localDB.contexts && STATE.localDB.models?.main_models) {
                                 const parts = currentComboName.match(/^\[(.*?)\]\s*(.*)$/);
-                                if (parts) actualComboName = parts[2];
-                                
-                                for (const ctx of Object.values(STATE.localDB.contexts)) {
-                                    const combo = (ctx.combos || []).find(c => c.name === actualComboName);
-                                    if (combo && combo.image) { imgUrl = combo.image; break; }
+                                if (parts) {
+                                    const m_name = parts[1];
+                                    const c_name = parts[2];
+                                    for (const [mId, mData] of Object.entries(STATE.localDB.models.main_models)) {
+                                        if ((mData.name || mId) === m_name) {
+                                            const combo = STATE.localDB.contexts[`${mId}_global`]?.combos?.find(c => c.name === c_name);
+                                            if (combo && combo.image) { imgUrl = combo.image; break; }
+                                        }
+                                    }
                                 }
                             }
                             if (imgUrl) { 

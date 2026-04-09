@@ -16,8 +16,9 @@ function getCtxData(ctx) {
 // ==========================================
 // 1. 收藏夹分组管理 API
 // ==========================================
+// === 附加排序逻辑 ===
 window.PM_Global.ui.openGroupsModal = function() {
-    const ctx = `${STATE.currentModelId}_${STATE.currentModeId}`;
+    const ctx = `${STATE.currentModelId}_global`;
     STATE.currentManageCtx = ctx; 
     const d = getCtxData(ctx);
     
@@ -37,6 +38,7 @@ window.PM_Global.ui.openGroupsModal = function() {
                             <button class="pm-action-btn primary" onclick="PM_Global.ui.createNewGroup('${ctx}')">新建分组</button>
                             <button class="pm-action-btn" onclick="PM_Global.ui.exportGroups()">导出配置</button>
                             <button class="pm-action-btn" onclick="document.getElementById('pm-import-groups-file').click()">导入配置</button>
+                            <button class="pm-action-btn" style="color:#f8961e; border-color:#835213;" title="将旧版本存放收藏/管理的存储方式转换为新版本。若收藏/管理无法显示，或导入了旧版本数据时，请点击此按键。" onclick="PM_Global.utils.manualMigrateData()">格式迁移</button>
                         </div>
                         <input type="file" id="pm-import-groups-file" accept=".json" style="display:none;" onchange="PM_Global.ui.importGroups(event)">
                     </div>
@@ -48,12 +50,34 @@ window.PM_Global.ui.openGroupsModal = function() {
     }
     
     const content = document.getElementById("pm-groups-content");
-    if (d.groups.length === 0) content.innerHTML = `<div style="color:#555; text-align:center; padding:50px;">当前模式下没有收藏夹分组。</div>`;
+    if (d.groups.length === 0) content.innerHTML = `<div style="color:#555; text-align:center; padding:50px;">当前模型下没有收藏分组。</div>`;
     else content.innerHTML = '';
 
     d.groups.forEach((g, idx) => {
-        const div = document.createElement("div"); div.className = "pm-list-item";
+        const div = document.createElement("div"); 
+        div.className = "pm-list-item";
+        div.style.transition = "border 0.2s";
+        
+        // 增加拖拽排序逻辑
+        div.draggable = true;
+        div.ondragstart = (e) => { e.dataTransfer.setData("text/plain", idx); e.stopPropagation(); };
+        div.ondragover = (e) => { e.preventDefault(); div.style.borderColor = "#ff6b9d"; };
+        div.ondragleave = (e) => { div.style.borderColor = "#333"; };
+        div.ondrop = async (e) => {
+            e.preventDefault(); e.stopPropagation(); div.style.borderColor = "#333";
+            const srcIdx = parseInt(e.dataTransfer.getData("text/plain"));
+            if (srcIdx !== idx && !isNaN(srcIdx)) {
+                const arr = getCtxData(ctx).groups;
+                const [moved] = arr.splice(srcIdx, 1);
+                arr.splice(idx, 0, moved);
+                await PromptAPI.saveDB(STATE.localDB);
+                window.PM_Global.ui.openGroupsModal();
+                UTILS.syncImportNodeWidgets();
+            }
+        };
+
         div.innerHTML = `
+            <div style="display:flex; align-items:center; justify-content:center; padding-right:15px; color:#555; cursor:grab; font-size:18px;" title="拖拽排序">☰</div>
             <div style="flex:1;">
                 <b style="color:#ff6b9d; font-size:16px;">${g.name}</b>
                 <div style="color:#888; font-size:12px; margin-top:5px;">包含 ${g.items.length} 张卡片</div>
@@ -111,7 +135,17 @@ window.PM_Global.ui.openGroupDetail = function(idx, ctx) {
     }
     
     g.items.forEach(item => {
-        const imgList = STATE.localDB.images[`${ctx}_${item}`] || [];
+        // 核心修复：图片存在于原卡片的三级分类里，而不是 global 里，需要全局检索此卡片的图片
+        let imgList = [];
+        for (const realCtx of Object.keys(STATE.localDB.contexts)) {
+            if (realCtx.endsWith('_global')) continue;
+            const possibleImgKey = `${realCtx}_${item}`;
+            if (STATE.localDB.images[possibleImgKey] && STATE.localDB.images[possibleImgKey].length > 0) {
+                imgList = STATE.localDB.images[possibleImgKey];
+                break; // 找到对应的图就立刻停止搜索
+            }
+        }
+
         const card = document.createElement("div"); card.className = "pm-card pm-selectable-card";
         
         if (activePrompts.includes(item)) {
@@ -200,8 +234,9 @@ window.PM_Global.ui.importGroups = function(e) {
 // ==========================================
 // 2. 组合预设管理 API
 // ==========================================
+// === 附加排序逻辑 ===
 window.PM_Global.ui.openCombosModal = function() {
-    const ctx = `${STATE.currentModelId}_${STATE.currentModeId}`;
+    const ctx = `${STATE.currentModelId}_global`;
     STATE.currentManageCtx = ctx; 
     const d = getCtxData(ctx);
     
@@ -219,6 +254,7 @@ window.PM_Global.ui.openCombosModal = function() {
                         <button class="pm-action-btn primary" style="flex:1;" onclick="PM_Global.ui.createNewCombo('${ctx}')">创建新组合</button>
                         <button class="pm-action-btn" onclick="PM_Global.ui.exportCombos()">导出配置(含图)</button>
                         <button class="pm-action-btn" onclick="document.getElementById('pm-import-combos-file').click()">导入配置</button>
+                        <button class="pm-action-btn" style="color:#f8961e; border-color:#835213;" title="将旧版本存放收藏/管理的存储方式转换为新版本。若收藏/管理无法显示，或导入了旧版本数据时，请点击此按键。" onclick="PM_Global.utils.manualMigrateData()">格式迁移</button>
                         <input type="file" id="pm-import-combos-file" accept=".json" style="display:none;" onchange="PM_Global.ui.importCombos(event)">
                     </div>
                     <div id="pm-combos-content" style="flex:1; overflow-y:auto; padding:15px; background:#111;"></div>
@@ -263,20 +299,41 @@ window.PM_Global.ui.openCombosModal = function() {
     else content.innerHTML = '';
     
     d.combos.forEach((c, idx) => {
-        const div = document.createElement("div"); div.className = "pm-combo-card";
-        // 增加 ?t=时间戳，强制打破浏览器缓存，解决裂图问题
+        const div = document.createElement("div"); 
+        div.className = "pm-combo-card";
+        div.style.transition = "border 0.2s";
+        
+        // 增加拖拽排序逻辑
+        div.draggable = true;
+        div.ondragstart = (e) => { e.dataTransfer.setData("text/plain", idx); e.stopPropagation(); };
+        div.ondragover = (e) => { e.preventDefault(); div.style.borderColor = "#ff6b9d"; };
+        div.ondragleave = (e) => { div.style.borderColor = "#333"; };
+        div.ondrop = async (e) => {
+            e.preventDefault(); e.stopPropagation(); div.style.borderColor = "#333";
+            const srcIdx = parseInt(e.dataTransfer.getData("text/plain"));
+            if (srcIdx !== idx && !isNaN(srcIdx)) {
+                const arr = getCtxData(ctx).combos;
+                const [moved] = arr.splice(srcIdx, 1);
+                arr.splice(idx, 0, moved);
+                await PromptAPI.saveDB(STATE.localDB);
+                window.PM_Global.ui.openCombosModal();
+                UTILS.syncImportNodeWidgets();
+            }
+        };
+
         const imgUrl = c.image ? `${c.image}?t=${Date.now()}` : '';
         const imgHtml = c.image ? `<img src="${imgUrl}" style="width:100px; height:100px; object-fit:cover; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-viewer-img').src='${imgUrl}'; pmShowModal('pm-image-viewer');">` : `<div style="width:100px; height:100px; background:#222; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#444; font-size:12px;">无预览图</div>`;
         const promptStr = c.elements.map(e => e.weight != 1 ? `(${e.tag}:${e.weight})` : e.tag).join(', ');
 
         div.innerHTML = `
+            <div style="display:flex; align-items:center; justify-content:center; padding-right:5px; color:#555; cursor:grab; font-size:18px;" title="拖拽排序">☰</div>
             ${imgHtml}
             <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
                 <b style="color:#ff6b9d; font-size:16px; margin-bottom:5px;">${c.name}</b>
                 <div style="color:#888; font-size:12px; line-height:1.4; max-height:40px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">${promptStr || '暂无标签...'}</div>
             </div>
             <div style="display:flex; flex-direction:column; justify-content:center; gap:8px; min-width:110px;">
-                <button class="pm-action-btn" style="color:#fff; padding:6px 10px; font-size:12px;" onclick="PM_Global.ui.exportComboToBrowser(${idx}, '${ctx}')">导至浏览器节点</button>
+                <button class="pm-action-btn" style="color:#fff; padding:6px 10px; font-size:12px;" onclick="PM_Global.ui.exportComboToBrowser(${idx}, '${ctx}')">导至节点</button>
                 <button class="pm-action-btn" style="padding:6px 10px; font-size:12px;" onclick="PM_Global.ui.openComboEditModal(${idx}, '${ctx}')">编辑</button>
                 <button class="pm-action-btn" style="color:#f44336; border-color:#5a1a1a; padding:6px 10px; font-size:12px;" onclick="PM_Global.ui.deleteCombo(${idx}, '${ctx}')">删除</button>
             </div>
@@ -581,11 +638,12 @@ app.registerExtension({
                     const g_name = parts[2];
                     let targetGroup = null;
                     
-                    for (const ctx_id of Object.keys(STATE.localDB.contexts)) {
-                        const modelId = ctx_id.split('_')[0];
-                        const modelName = STATE.localDB.models?.main_models?.[modelId]?.name || modelId;
+                    const models = STATE.localDB.models?.main_models || {};
+                    for (const [modelId, modelData] of Object.entries(models)) {
+                        const modelName = modelData.name || modelId;
                         if (modelName === m_name) {
-                            const groups = STATE.localDB.contexts[ctx_id]?.groups || [];
+                            const globalCtx = `${modelId}_global`;
+                            const groups = STATE.localDB.contexts[globalCtx]?.groups || [];
                             targetGroup = groups.find(g => g.name === g_name);
                             if (targetGroup) break;
                         }
