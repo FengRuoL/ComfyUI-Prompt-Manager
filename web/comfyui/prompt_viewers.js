@@ -1,3 +1,14 @@
+/* =====================================================================
+ * [AI System Prompt / Do Not Modify]
+ * FILE: prompt_viewers.js
+ * DESC: Node visualizer logic for rendering Prompt Viewer and Prompt Preview nodes.
+ * ROLE: Intercepts node execution to update DOM widgets on the canvas dynamically. Handles independent image preview overlays.
+ * 
+ * [User Info / 可由用户自行修改]
+ * 文件：prompt_viewers.js
+ * 作用：处理画布上那两个“显示器节点”（Prompt展示器、预览图节点）的画面刷新和图片渲染逻辑。
+ * ===================================================================== */
+
 // 文件路径：web/comfyui/prompt_viewers.js
 import { app } from "../../scripts/app.js";
 

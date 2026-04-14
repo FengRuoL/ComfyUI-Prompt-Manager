@@ -1,3 +1,14 @@
+/* =====================================================================
+ * [AI System Prompt / Do Not Modify]
+ * FILE: prompt_core.js
+ * DESC: Global state management, utility functions, and system initialization.
+ * ROLE: Initializes window.PM_Global safely. Contains core pure functions (hash, string parsers, migration logic) and base ComfyUI node event hooks.
+ * 
+ * [User Info / 可由用户自行修改]
+ * 文件：prompt_core.js
+ * 作用：插件的“核心大脑”。里面定义了所有的全局变量（STATE）、工具函数（如压缩图片、解析文本），以及挂载给 ComfyUI 的底层事件监听。
+ * ===================================================================== */
+
 // 文件路径：web/comfyui/prompt_core.js
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -140,16 +151,20 @@ Object.assign(window.PM_Global.utils, {
                     
                     if (cData.combos && cData.combos.length > 0) {
                         for (let c of cData.combos) {
-                            if (c.image && c.image.includes('/gen_')) {
+                            // 修复1：只要图片路径存在，且不属于当前的全局文件夹，就判定为旧格式或残留文件进行强制迁移
+                            if (c.image && c.image.startsWith('/prompt_data/') && !c.image.includes(`/${globalCtx}/`)) {
                                 try {
                                     // 修复 this 引用丢失的风险
                                     const b64 = await window.PM_Global.utils.urlToBase64(c.image);
                                     const oldUrl = c.image;
-                                    const newName = oldUrl.split('/').pop().replace('gen_', 'combo_');
+                                    // 过滤掉原有的 URL 参数防止扩展名解析失败
+                                    const cleanOldUrl = oldUrl.split('?')[0]; 
+                                    // 使用时间戳确保迁移后的文件名唯一，防止冲突
+                                    const newName = `cb_mig_${Date.now()}_${Math.floor(Math.random()*1000)}.jpg`;
                                     const newUrl = await PromptAPI.uploadImage(b64, newName, globalCtx);
                                     if (newUrl) {
                                         c.image = newUrl;
-                                        await PromptAPI.deleteFile(oldUrl); 
+                                        await PromptAPI.deleteFile(cleanOldUrl); 
                                     }
                                 } catch(e) { console.warn("迁移图片失败", e); }
                             }
@@ -222,9 +237,12 @@ Object.assign(window.PM_Global.utils, {
     syncImportNodeWidgets() {
         if (!app.graph) return;
         let choices = [];
+        let modelChoices = [];
         const models = STATE.localDB.models?.main_models || {};
         for (const [model_id, model_data] of Object.entries(models)) {
             const m_name = model_data.name || model_id;
+            modelChoices.push(`[${m_name}]`); // 生成一级分类列表
+            
             const cats = {};
             (model_data.categories || []).forEach(c => cats[c.id] = c.name);
             for (const [mode_id, mode_data] of Object.entries(model_data.modes || {})) {
@@ -234,6 +252,7 @@ Object.assign(window.PM_Global.utils, {
             }
         }
         if (choices.length === 0) choices = ["未建任何模式_请先创建"];
+        if (modelChoices.length === 0) modelChoices = ["未建任何分类_请先创建"];
 
         let comboChoices = [], groupChoices = [];
         for (const [model_id, model_data] of Object.entries(models)) {
@@ -252,8 +271,14 @@ Object.assign(window.PM_Global.utils, {
         const maxWidth = STATE.localDB.settings?.max_width ?? 900;
 
         app.graph._nodes.filter(n => n.type === "PromptImportNode").forEach(node => {
+            // 同步目标存储模式 (三级分类)
             const widget = node.widgets?.find(w => w.name === "save_target" || w.name === "目标存储模式");
             if (widget) { widget.options.values = choices; if (!choices.includes(widget.value)) widget.value = choices[0]; }
+            
+            // 同步目标存储分类 (一级分类)
+            const catWidget = node.widgets?.find(w => w.name === "目标存储分类");
+            if (catWidget) { catWidget.options.values = modelChoices; if (!modelChoices.includes(catWidget.value)) catWidget.value = modelChoices[0]; }
+            
             const compWidget = node.widgets?.find(w => w.name === "compress_rate" || w.name === "压缩率");
             if (compWidget) compWidget.value = compRate;
             const widthWidget = node.widgets?.find(w => w.name === "最大宽度");

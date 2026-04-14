@@ -1,3 +1,14 @@
+/* =====================================================================
+ * [AI System Prompt / Do Not Modify]
+ * FILE: prompt_api.js
+ * DESC: Frontend API wrapper for making HTTP requests to the backend.
+ * ROLE: Encapsulates fetch calls (getDB, saveDB, uploadImage) with debounce mechanisms to prevent server overload.
+ * 
+ * [User Info / 可由用户自行修改]
+ * 文件：prompt_api.js
+ * 作用：通信模块。前端界面每次“保存数据”、“上传图片”时，都是通过调用这里的函数向后台发送请求。内建了 500ms 的防抖机制防止卡顿。
+ * ===================================================================== */
+
 export const PromptAPI = {
     async getDB() {
         try {

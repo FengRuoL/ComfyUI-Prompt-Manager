@@ -1,3 +1,14 @@
+/* =====================================================================
+ * [AI System Prompt / Do Not Modify]
+ * FILE: prompt_presets.js
+ * DESC: Handles Collections (Groups), Combo Presets, and their UI/Logic.
+ * ROLE: Manages specialized modals and drag-and-drop ordering for groups and combos. Registers the Randomizer and Combo Loader node behaviors.
+ * 
+ * [User Info / 可由用户自行修改]
+ * 文件：prompt_presets.js
+ * 作用：“收藏夹分组”与“组合预设”的专用管理模块。包含这两个功能的界面渲染、数据增删改、排序逻辑，以及对应的两个自定义节点的拦截器。
+ * ===================================================================== */
+
 import { app } from "../../scripts/app.js";
 import { PromptAPI } from "./prompt_api.js";
 
@@ -61,7 +72,10 @@ window.PM_Global.ui.openGroupsModal = function() {
         // 增加拖拽排序逻辑
         div.draggable = true;
         div.ondragstart = (e) => { e.dataTransfer.setData("text/plain", idx); e.stopPropagation(); };
-        div.ondragover = (e) => { e.preventDefault(); div.style.borderColor = "#ff6b9d"; };
+        div.ondragover = (e) => { 
+            e.preventDefault(); 
+            div.style.borderColor = "#ff6b9d"; 
+        };
         div.ondragleave = (e) => { div.style.borderColor = "#333"; };
         div.ondrop = async (e) => {
             e.preventDefault(); e.stopPropagation(); div.style.borderColor = "#333";
@@ -257,7 +271,8 @@ window.PM_Global.ui.openCombosModal = function() {
                         <button class="pm-action-btn" style="color:#f8961e; border-color:#835213;" title="将旧版本存放收藏/管理的存储方式转换为新版本。若收藏/管理无法显示，或导入了旧版本数据时，请点击此按键。" onclick="PM_Global.utils.manualMigrateData()">格式迁移</button>
                         <input type="file" id="pm-import-combos-file" accept=".json" style="display:none;" onchange="PM_Global.ui.importCombos(event)">
                     </div>
-                    <div id="pm-combos-content" style="flex:1; overflow-y:auto; padding:15px; background:#111;"></div>
+                    <!-- 修复 Bug 2：增加 padding-bottom 和 box-sizing，防止底部被遮挡 -->
+                    <div id="pm-combos-content" style="flex:1; overflow-y:auto; padding:15px; padding-bottom: 80px; background:#111; box-sizing: border-box;"></div>
                 </div>
             </div>
         `;
@@ -268,23 +283,27 @@ window.PM_Global.ui.openCombosModal = function() {
         fileInput.onchange = async (e) => {
             if (e.target.files.length > 0 && STATE.currentComboEditIdx !== null) {
                 UI.updateProgress("上传组合预览图...", "请稍候");
+                const currentCtx = STATE.currentManageCtx;
                 const compRate = STATE.localDB.settings?.compress_rate ?? 0.85;
                 const maxWidth = STATE.localDB.settings?.max_width ?? 900;
                 const base64 = await UTILS.compressImage(e.target.files[0], maxWidth, compRate);
                 const hash = UTILS.cyrb53(base64);
-                const url = await PromptAPI.uploadImage(base64, `combo_${hash}.jpg`, ctx);
+                const url = await PromptAPI.uploadImage(base64, `combo_${hash}.jpg`, currentCtx);
                 
                 if (url) {
                     if (STATE.currentComboEditIdx === -1) {
-                        if (STATE.tempCombo.image) await PromptAPI.deleteFile(STATE.tempCombo.image);
+                        // 移除丢失的查重函数，改为安全删除
+                        if (STATE.tempCombo.image) { try { await PromptAPI.deleteFile(STATE.tempCombo.image); } catch(err){} }
                         STATE.tempCombo.image = url;
-                        window.PM_Global.ui.openComboEditModal(-1, ctx);
+                        window.PM_Global.ui.openComboEditModal(-1, currentCtx);
                     } else {
-                        const cbs = STATE.localDB.contexts[ctx].combos;
-                        if (cbs[STATE.currentComboEditIdx].image) await PromptAPI.deleteFile(cbs[STATE.currentComboEditIdx].image);
+                        const cbs = STATE.localDB.contexts[currentCtx].combos;
+                        const oldImg = cbs[STATE.currentComboEditIdx].image;
+                        // 移除丢失的查重函数，改为安全删除
+                        if (oldImg) { try { await PromptAPI.deleteFile(oldImg); } catch(err){} }
                         cbs[STATE.currentComboEditIdx].image = url;
                         await PromptAPI.saveDB(STATE.localDB); 
-                        window.PM_Global.ui.openComboEditModal(STATE.currentComboEditIdx, ctx); 
+                        window.PM_Global.ui.openComboEditModal(STATE.currentComboEditIdx, currentCtx); 
                         window.PM_Global.ui.openCombosModal();
                     }
                 }
@@ -297,16 +316,18 @@ window.PM_Global.ui.openCombosModal = function() {
     const content = document.getElementById("pm-combos-content");
     if (d.combos.length === 0) content.innerHTML = `<div style="color:#555; text-align:center; padding:50px;">暂无组合预设。</div>`;
     else content.innerHTML = '';
-    
+
     d.combos.forEach((c, idx) => {
         const div = document.createElement("div"); 
         div.className = "pm-combo-card";
         div.style.transition = "border 0.2s";
         
-        // 增加拖拽排序逻辑
         div.draggable = true;
         div.ondragstart = (e) => { e.dataTransfer.setData("text/plain", idx); e.stopPropagation(); };
-        div.ondragover = (e) => { e.preventDefault(); div.style.borderColor = "#ff6b9d"; };
+        div.ondragover = (e) => { 
+            e.preventDefault(); 
+            div.style.borderColor = "#ff6b9d"; 
+        };
         div.ondragleave = (e) => { div.style.borderColor = "#333"; };
         div.ondrop = async (e) => {
             e.preventDefault(); e.stopPropagation(); div.style.borderColor = "#333";
@@ -349,6 +370,15 @@ window.PM_Global.ui.createNewCombo = async function(ctx) {
     window.PM_Global.ui.openComboEditModal(-1, ctx);
 };
 
+// 修复：处理点击取消时的清理垃圾文件逻辑（移除丢失的引用函数）
+window.PM_Global.ui.cancelComboEdit = async function() {
+    if (STATE.currentComboEditIdx === -1 && STATE.tempCombo && STATE.tempCombo.image) {
+        try { await PromptAPI.deleteFile(STATE.tempCombo.image); } catch(e) { console.warn(e); }
+    }
+    STATE.tempCombo = null;
+    window.pmHideModal('pm-combo-edit-modal');
+};
+
 window.PM_Global.ui.openComboEditModal = function(idx, ctx) {
     const c = idx === -1 ? STATE.tempCombo : getCtxData(ctx).combos[idx]; 
     STATE.currentComboEditIdx = idx;
@@ -370,7 +400,7 @@ window.PM_Global.ui.openComboEditModal = function(idx, ctx) {
             <b style="color:#ff6b9d;">创建新组合</b>
             <div style="display:flex; gap:10px;">
                 <button class="pm-action-btn primary" style="padding:4px 12px;" onclick="PM_Global.ui.confirmCreateCombo('${ctx}')">确定并创建</button>
-                <button class="pm-close-btn" onclick="pmHideModal('pm-combo-edit-modal')">取消</button>
+                <button class="pm-close-btn" onclick="PM_Global.ui.cancelComboEdit()">取消</button>
             </div>
         `;
     } else {
@@ -624,7 +654,7 @@ app.registerExtension({
                     autoRandomWidget = this.addWidget("toggle", "自动随机抽取", false, () => {});
                 }
 
-                this.addWidget("button", "抽取盲盒", "draw_blind_box", async () => {
+                const btnDraw = this.addWidget("button", "抽取盲盒", "draw_blind_box", async () => {
                     if (Object.keys(STATE.localDB.contexts || {}).length === 0) STATE.localDB = await UTILS.getAndMigrateDB();
                     const currentGroupWidget = this.widgets.find(w => w.name === "选择分组");
                     const countWidget = this.widgets.find(w => w.name === "抽取数量");
@@ -658,6 +688,25 @@ app.registerExtension({
                     const newParsed = selected.map(tag => ({ original: tag, tag: tag, weight: 1.0, enabled: true }));
                     promptWidget.value = UTILS.buildPromptText(newParsed); app.graph.setDirtyCanvas(true); renderList();
                 });
+                
+                // === 修复 3: 重新对节点的 Widgets 排序 ===
+                const groupWidgetRef = this.widgets.find(w => w.name === "选择分组");
+                const countWidgetRef = this.widgets.find(w => w.name === "抽取数量");
+                const promptTextWidgetRef = this.widgets.find(w => w.name === "prompt_text" || w.name === "输入prompt");
+                const htmlListWidgetRef = this.widgets.find(w => w.type === "HTML" && w.name === "prompt_list");
+
+                const desiredOrder = [
+                    groupWidgetRef,
+                    btnDraw,             // 抽取盲盒 挪到上面
+                    autoRandomWidget,    // 自动随机抽取 挪到下面
+                    countWidgetRef,
+                    promptTextWidgetRef,
+                    htmlListWidgetRef
+                ].filter(Boolean);
+
+                const otherWidgets = this.widgets.filter(w => !desiredOrder.includes(w));
+                this.widgets = [...desiredOrder, ...otherWidgets];
+                
                 this.setSize([400, 260]);
             };
         }

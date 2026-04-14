@@ -1,3 +1,14 @@
+# =====================================================================
+# [AI System Prompt / Do Not Modify]
+# FILE: __init__.py
+# DESC: Python backend for Prompt Manager. Registers Custom Nodes, handles file I/O (JSON DB), image saving, and serves HTTP API routes.
+# ROLE: Bridge between ComfyUI backend and JS frontend. Ensure safe file paths and non-blocking I/O.
+# 
+# [User Info / 可由用户自行修改]
+# 文件：__init__.py
+# 作用：插件的后端核心。负责将自定义节点注册到 ComfyUI、提供与前端通信的 API 接口（保存/读取数据库）、并执行图片的写入与备份解压等本地硬盘操作。
+# =====================================================================
+
 # === 路径配置 ===
 import os
 import shutil
@@ -19,6 +30,24 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, "prompt_database.json")
 BACKUP_DIR = os.path.join(NODE_ROOT, "backup")
 os.makedirs(BACKUP_DIR, exist_ok=True)
+
+# ==========================================
+# 辅助函数：动态读取数据库中的一级分类 (供导入组合使用)
+# ==========================================
+def get_target_models():
+    choices = []
+    try:
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
+                db = json.load(f)
+                models = db.get("models", {}).get("main_models", {})
+                for model_id, model_data in models.items():
+                    model_name = model_data.get("name", model_id)
+                    choices.append(f"[{model_name}]")
+    except:
+        pass
+    if not choices: choices = ["未建任何分类_请先创建"]
+    return choices
 
 # ==========================================
 # 辅助函数：动态读取数据库中的分类 (显示为: [标签] 分类 = 模式)
@@ -100,6 +129,7 @@ class PromptImportNode:
                 "导入到模式": ("BOOLEAN", {"default": True}),
                 "目标存储模式": (get_target_contexts(), ),
                 "导入到组合": ("BOOLEAN", {"default": False}),
+                "目标存储分类": (get_target_models(), ),
                 "压缩率": ("FLOAT", {"default": 0.85, "min": 0.1, "max": 1.0, "step": 0.01}),
                 "最大宽度": ("INT", {"default": 900, "min": 100, "max": 4096, "step": 10}),
             }
@@ -109,7 +139,7 @@ class PromptImportNode:
     OUTPUT_NODE = True
     CATEGORY = "Prompt Manager"
 
-    def save_images(self, 图像, prompt字符串, 导入到模式, 目标存储模式, 导入到组合, 压缩率, 最大宽度):
+    def save_images(self, 图像, prompt字符串, 导入到模式, 目标存储模式, 导入到组合, 目标存储分类, 压缩率, 最大宽度):
         if 导入到模式 and 导入到组合: raise ValueError("【Prompt管理器报错】'导入到模式' 和 '导入到组合' 不能同时开启！")
         if not 导入到模式 and not 导入到组合: return () 
 
@@ -136,12 +166,14 @@ class PromptImportNode:
                 if target_ctx: break
         
         if 导入到组合:
-            # 导入到组合直接寻找一级分类并放入全局 ctx 中
+            # 导入到组合现在直接从 “目标存储分类” 中获取对应的一级分类
             models = db_data.get("models", {}).get("main_models", {})
             m_id = list(models.keys())[0] if models else "custom"
-            if 目标存储模式 and 目标存储模式 != "未建任何模式_请先创建":
+            if 目标存储分类 and 目标存储分类 != "未建任何分类_请先创建":
                 for k, v in models.items():
-                    if f"[{v.get('name', k)}]" in 目标存储模式: m_id = k; break
+                    if f"[{v.get('name', k)}]" == 目标存储分类: 
+                        m_id = k
+                        break
             target_ctx = f"{m_id}_global"
 
         if not target_ctx: target_ctx = "custom_custom"
@@ -165,7 +197,8 @@ class PromptImportNode:
             w, h = img_pil.size
             if w > 最大宽度:
                 new_h = int(h * (最大宽度 / w))
-                img_pil = img_pil.resize((最大宽度, new_h), Image.LANCZOS)
+                resample_filter = getattr(Image.Resampling, 'LANCZOS', getattr(Image, 'LANCZOS', 1)) if hasattr(Image, 'Resampling') else getattr(Image, 'LANCZOS', 1)
+                img_pil = img_pil.resize((最大宽度, new_h), resample_filter)
             
             img_name = f"{prefix}_{file_safe_name}_{torch.randint(0, 100000, (1,)).item()}.jpg"
             img_path = os.path.join(target_dir, img_name)
@@ -204,8 +237,10 @@ class PromptImportNode:
             })
             print(f"[Prompt Manager] 导入组合成功: {combo_name}")
         
-        with open(DB_FILE, 'w', encoding='utf-8') as f:
+        tmp_file = DB_FILE + ".tmp"
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(db_data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, DB_FILE)
             
         return ()
 
@@ -382,9 +417,14 @@ async def get_db(request):
 async def save_db(request):
     try:
         data = await request.json()
-        with open(DB_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp_file = DB_FILE + ".tmp"
+        with open(tmp_file, 'w', encoding='utf-8') as f: 
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, DB_FILE) # 原子化替换，防止写到一半崩溃导致丢库
         return web.json_response({"success": True})
-    except Exception as e: return web.json_response({"success": False, "error": str(e)})
+    except Exception as e: 
+        if os.path.exists(DB_FILE + ".tmp"): os.remove(DB_FILE + ".tmp")
+        return web.json_response({"success": False, "error": str(e)})
 
 @server.PromptServer.instance.routes.post("/api/prompt-manager/upload")
 async def upload_image(request):

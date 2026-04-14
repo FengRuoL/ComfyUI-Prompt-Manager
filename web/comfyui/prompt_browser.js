@@ -1,3 +1,14 @@
+/* =====================================================================
+ * [AI System Prompt / Do Not Modify]
+ * FILE: prompt_browser.js
+ * DESC: Main UI controller and DOM renderer for the Prompt Manager browser.
+ * ROLE: Handles native browser window creation, drag-and-drop, event listeners, and grid rendering.
+ * 
+ * [User Info / 可由用户自行修改]
+ * 文件：prompt_browser.js
+ * 作用：插件前端的“核心 UI 引擎”。主要负责生成、控制、渲染弹出的大型管理界面（包括左侧分类与侧边栏、右侧卡片瀑布流以及所有的操作弹窗）。
+ * ===================================================================== */
+
 import { app } from "../../scripts/app.js";
 import { PromptAPI } from "./prompt_api.js";
 
@@ -267,12 +278,19 @@ window.PM_Global.ui.openBatchEditModal = function() {
     
     const sel = document.getElementById('pm-batch-group-select');
     sel.innerHTML = '';
-    const ctx = `${STATE.currentModelId}_${STATE.currentModeId}`;
-    const groups = STATE.localDB.contexts[ctx]?.groups || [];
-    groups.forEach(g => {
-        const opt = document.createElement('option');
-        opt.value = g.name; opt.innerText = g.name; sel.appendChild(opt);
-    });
+    
+    // 修复 Bug 3：向全局上下文去索取分组列表
+    const globalCtx = `${STATE.currentModelId}_global`;
+    const groups = STATE.localDB.contexts[globalCtx]?.groups || [];
+    
+    if (groups.length === 0) {
+        sel.innerHTML = '<option value="">(当前一级分类下暂无收藏分组)</option>';
+    } else {
+        groups.forEach(g => {
+            const opt = document.createElement('option');
+            opt.value = g.name; opt.innerText = g.name; sel.appendChild(opt);
+        });
+    }
     window.pmShowModal('pm-batch-edit-modal');
 };
 
@@ -283,6 +301,7 @@ window.PM_Global.ui.onBatchActionChange = function(val) {
 
 window.PM_Global.ui.executeBatchEdit = async function() {
     const act = document.getElementById('pm-batch-action-select').value;
+    
     if (act === 'add-tags' || act === 'remove-tags') {
         const tags = document.getElementById('pm-batch-tag-input').value.split(',').map(x => x.trim()).filter(x => x);
         STATE.batchSelection.forEach(batchKey => {
@@ -295,15 +314,17 @@ window.PM_Global.ui.executeBatchEdit = async function() {
         });
     } else {
         const gName = document.getElementById('pm-batch-group-select').value;
-        const targetCtx = `${STATE.currentModelId}_${STATE.currentModeId}`;
-        const g = STATE.localDB.contexts[targetCtx]?.groups?.find(x => x.name === gName);
+        if (!gName) return alert("没有可用的收藏分组！");
+        
+        // 修复 Bug 3：将卡片写入到全局上下文中
+        const globalCtx = `${STATE.currentModelId}_global`;
+        const g = STATE.localDB.contexts[globalCtx]?.groups?.find(x => x.name === gName);
         if (g) {
             STATE.batchSelection.forEach(batchKey => {
                 const [ctx, item] = batchKey.split('||');
-                if (ctx === targetCtx) {
-                    if (act === 'add-to-group' && !g.items.includes(item)) g.items.push(item);
-                    else if (act === 'remove-from-group') g.items = g.items.filter(x => x !== item);
-                }
+                // 移除 ctx === targetCtx 的限制，因为分组现在是全局的，可以收纳任何模式的卡片
+                if (act === 'add-to-group' && !g.items.includes(item)) g.items.push(item);
+                else if (act === 'remove-from-group') g.items = g.items.filter(x => x !== item);
             });
         }
     }
@@ -457,462 +478,396 @@ window.PM_Global.ui.toggleSidebarSection = function(id, el) {
 
 function openNativeBrowser() {
     let container = document.getElementById("pm-native-modal");
-    if (!document.getElementById("pm-native-style")) {
-        const style = document.createElement("style");
-        style.id = "pm-native-style";
-        style.innerHTML = `
-            #pm-native-modal { position: fixed; top: 8vh; left: 15vw; width: 70vw; height: 85vh; background: #1e1e1e; border: 1px solid rgba(255,107,157,0.5); border-radius: 16px; display: flex; flex-direction: column; z-index: 10000; box-shadow: 0 10px 50px rgba(0,0,0,0.8); color: #ccc; font-family: sans-serif; resize: both; overflow: hidden; min-width: 800px; min-height: 500px; }
-            .pm-header { padding: 12px 20px; background: #252525; display: flex; justify-content: space-between; align-items: center; cursor: move; border-bottom: 1px solid #333;}
-            .pm-close-btn { background: #d32f2f; border: none; color: white; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s;}
-            .pm-close-btn:hover { background: #f44336; transform: scale(1.05); }
-            ::-webkit-scrollbar { width: 8px; height: 8px; }
-            ::-webkit-scrollbar-track { background: transparent; }
-            ::-webkit-scrollbar-thumb { background: rgba(255,107,157,0.3); border-radius: 4px; }
-            ::-webkit-scrollbar-thumb:hover { background: rgba(255,107,157,0.6); }
-            .pm-tabs { display: flex; background: #222; border-bottom: 1px solid #333; padding: 0 10px; overflow-x: auto; align-items: center;}
-            .pm-tab-wrap { display: flex; align-items: center; border-bottom: 3px solid transparent; transition: 0.2s;}
-            .pm-tab-wrap.active { border-bottom-color: #ff6b9d; background: #2a2a2a;}
-            .pm-tab-btn { background: transparent; border: none; color: #888; padding: 12px 15px; font-size: 13px; font-weight: bold; cursor: pointer; white-space: nowrap;}
-            .pm-tab-btn:hover { color: #ddd; }
-            .pm-tab-wrap.active .pm-tab-btn { color: #ff6b9d; }
-            .pm-body { display: flex; flex: 1; overflow: hidden; }
-            .pm-sidebar { width: 250px; background: #1a1a1a; border-right: 1px solid #333; display: flex; flex-direction: column; }
-            .pm-sidebar-scroll { flex: 1; padding: 10px; overflow-y: auto; display: flex; flex-direction: column; }
-            .pm-cat-wrap { margin-top: 15px; margin-bottom: 5px; }
-            .pm-cat-header { display: flex; justify-content: space-between; align-items: center; padding: 0 5px; margin-bottom: 5px;}
-            .pm-cat-title { font-size: 14px; color: #888; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;}
-            .pm-mode-wrap { display: flex; align-items: center; justify-content: space-between; padding-right: 5px; border-radius: 8px; transition: 0.2s; margin-bottom: 2px;}
-            .pm-mode-wrap:hover { background: #2a2a2a; }
-            .pm-mode-wrap.active { background: rgba(255,107,157,0.1); border-left: 4px solid #ff6b9d; }
-            .pm-mode-btn { background: transparent; border: none; color: #bbb; text-align: left; padding: 8px 10px; flex: 1; cursor: pointer; font-size: 13px; }
-            .pm-mode-wrap.active .pm-mode-btn { color: #ff6b9d; font-weight: bold;}
-            .pm-ctrl-group { display: flex; gap: 4px; }
-            .pm-ctrl-btn { background: rgba(0,0,0,0.3); border: 1px solid #444; color: #888; font-size: 11px; cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: 0.2s; display: flex; align-items: center; justify-content: center; font-weight:bold;}
-            .pm-ctrl-btn:hover { background: #333; color: #fff; border-color: #666; }
-            .pm-ctrl-btn.del:hover { background: #5a1a1a; color: #f44336; border-color: #f44336; }
-            .pm-divider { border-bottom: 1px dashed rgba(255,107,157,0.3); margin: 15px 5px 10px 5px; }
-            .pm-add-btn { background: transparent; border: 1px dashed rgba(255,107,157,0.5); color: #777; padding: 8px; border-radius: 8px; font-size: 12px; cursor: pointer; text-align: center; transition: 0.2s; font-weight:bold;}
-            .pm-add-btn:hover { border-color: #ff6b9d; color: #ff6b9d; background: rgba(255,107,157,0.1); }
-            .pm-sidebar-footer { padding: 15px; background: #151515; border-top: 1px solid #333; display: flex; flex-direction: column; gap: 8px; }
-            .pm-sidebar-group { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed rgba(255,107,157,0.3); }
-            .pm-sidebar-group:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
-            .pm-sidebar-label { font-size: 11px; color: #777; margin-bottom: 8px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
-            .pm-btn-row { display: flex; gap: 8px; margin-bottom: 8px; }
-            .pm-action-btn { background: #2a2a2a; border: 1px solid #444; color: #ccc; padding: 8px; border-radius: 8px; cursor: pointer; font-size: 12px; transition: 0.2s; text-align: center; font-weight: bold;}
-            .pm-action-btn:hover { background: #333; color: #fff; border-color: #666; transform: translateY(-1px);}
-            .pm-action-btn.primary { background: rgba(255,107,157,0.15); color: #ff6b9d; border-color: rgba(255,107,157,0.4); }
-            .pm-action-btn.primary:hover { background: #ff6b9d; color: #fff; border-color: #ff6b9d; }
-            
-            .pm-main-container { flex: 1; display: flex; flex-direction: column; background: #151515; overflow: hidden; position: relative;}
-            .pm-main.batch-active { user-select: none; -webkit-user-select: none; }
-            
-            .pm-toolbar { display: flex; gap: 15px; padding: 12px 20px; background: #1e1e1e; border-bottom: 1px solid #333; align-items: center;}
-            .pm-search-input { flex: 1; padding: 10px 15px; background: #111; border: 1px solid #444; border-radius: 8px; color: #ddd; font-size: 13px; outline: none; transition: 0.2s;}
-            .pm-search-input:focus { border-color: #ff6b9d; box-shadow: 0 0 5px rgba(255,107,157,0.3);}
-            .pm-scope-select { padding: 10px; background: #111; border: 1px solid #444; border-radius: 8px; color: #ddd; font-size: 13px; outline: none;}
-            .pm-zoom-slider { width: 100px; cursor: pointer; accent-color: #ff6b9d; }
-            .pm-toolbar-right { display: flex; align-items: center; gap: 10px; background: #111; padding: 8px 15px; border-radius: 8px; border: 1px solid #444; }
-            .pm-main { flex: 1; padding: 20px; overflow-y: auto; display: grid; gap: 20px; align-content: start; position: relative;}
-            #pm-marquee { position: absolute; border: 1px solid #ff6b9d; background: rgba(255, 107, 157, 0.2); pointer-events: none; display: none; z-index: 100; border-radius:4px;}
-            .pm-card { background: #222; padding: 12px; border-radius: 12px; border: 1px solid #333; transition: 0.2s; display: flex; flex-direction: column;}
-            .pm-card:hover { border-color: #ff6b9d; box-shadow: 0 4px 15px rgba(0,0,0,0.5), 0 0 10px rgba(255,107,157,0.1); transform: translateY(-2px);}
-            .pm-card.in-prompt { border-color: #ff6b9d; background: rgba(255,107,157,0.05); box-shadow: 0 0 10px rgba(255,107,157,0.2);}
-            .pm-card.batch-selected { border-color: #f44336; background: #3a1e1e; }
-            .pm-card-img-wrap { width: 100%; aspect-ratio: 1/1; background: #1a1a1a; margin-bottom: 10px; border-radius: 8px; overflow: hidden; position: relative;}
-            .pm-card img { width: 100%; height: 100%; object-fit: cover; }
-            .pm-no-img { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #555; font-size: 13px; font-weight:bold;}
-            .pm-nav-arrow { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: none; padding: 8px 12px; cursor: pointer; z-index: 5; opacity: 0; transition: 0.2s; border-radius: 8px; font-weight: bold; }
-            .pm-card-img-wrap:hover .pm-nav-arrow { opacity: 1; }
-            .pm-nav-arrow.left { left: 8px; }
-            .pm-nav-arrow.right { right: 8px; }
-            .pm-nav-arrow:hover { background: #ff6b9d; }
-            .pm-del-img-btn { position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.6); color: #fff; border: 1px solid #555; padding: 2px 6px; cursor: pointer; z-index: 10; transition: 0.2s; border-radius: 4px; font-weight: bold; font-size: 12px; }
-            .pm-del-img-btn:hover { background: #f44336; border-color: #f44336; }
-            .pm-card-title { font-size: 14px; text-align: center; color: #ddd; word-break: break-all; line-height: 1.3; font-weight: bold; }
-            .pm-card-source { font-size: 11px; text-align: center; color: #888; margin-top: 4px; }
-            .pm-card-tags { font-size: 11px; padding: 8px 0; display: flex; flex-wrap: wrap; gap: 6px; border-top: 1px dashed rgba(255,107,157,0.3); border-bottom: 1px dashed rgba(255,107,157,0.3); min-height: 32px; align-content: flex-start; margin-top: 8px; }
-            .pm-tag { background: rgba(255, 107, 157, 0.15); border: 1px solid rgba(255, 107, 157, 0.4); padding: 3px 8px; border-radius: 12px; color: #ff6b9d; white-space: nowrap; font-weight: bold; }
-            .pm-card-actions { display: flex; justify-content: flex-start; padding-top: 10px; gap: 6px; flex-wrap: wrap;}
-            .pm-text-btn { background: #2a2a2a; color: #ccc; border: 1px solid #444; padding: 4px 6px; border-radius: 6px; cursor: pointer; transition: 0.2s; font-size: 11px; font-weight: bold; white-space: nowrap; }
-            .pm-text-btn:hover { background: #ff6b9d; border-color: #ff6b9d; color: #fff; }
-            .pm-text-btn.danger:hover { background: #f44336; border-color: #f44336; color: #fff; }
-            .pm-text-btn.warning { color: #f8961e; border-color: #835213; }
-            .pm-text-btn.warning:hover { background: #f8961e; color: #fff; border-color: #f8961e; }
-            .pm-batch-bar { background: #222; border-top: 1px solid rgba(255,107,157,0.5); padding: 15px 20px; display: none; justify-content: space-between; align-items: center; }
-            .pm-batch-bar.active { display: flex; }
-            .pm-modal-overlay { position: fixed; top:0; left:0; width:100vw; height:100vh; background: rgba(0,0,0,0.85); z-index: 20001; display:none; flex-direction:column; align-items:center; justify-content:center;}
-            .pm-list-item { background: #1a1a1a; border: 1px solid #333; padding: 15px; margin-bottom: 10px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;}
-            .pm-create-box { background: #222; width: 500px; border-radius: 16px; border: 1px solid rgba(255,107,157,0.5); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.8);}
-            .pm-create-header { padding: 20px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; background: #1a1a1a; font-size:16px;}
-            .pm-create-tabs { display: flex; background: #111; border-bottom: 1px solid #333;}
-            .pm-ct-btn { flex: 1; padding: 15px; background: transparent; border: none; color: #888; cursor: pointer; font-size: 14px; font-weight: bold; border-bottom: 3px solid transparent; transition:0.2s;}
-            .pm-ct-btn.active { color: #ff6b9d; border-bottom-color: #ff6b9d; background: #222;}
-            .pm-create-content { padding: 25px; color: #ccc; font-size: 13px; }
-            .pm-input-text { width: 100%; padding: 12px; background: #111; border: 1px solid #444; border-radius: 8px; color: #ddd; margin-top: 10px; outline: none; transition:0.2s;}
-            .pm-input-text:focus { border-color: #ff6b9d; box-shadow: 0 0 5px rgba(255,107,157,0.3);}
-            .pm-combo-card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; display: flex; padding: 15px; gap: 15px; margin-bottom: 15px; transition: 0.2s; }
-            .pm-combo-card:hover { border-color: #ff6b9d; background: #222; box-shadow: 0 4px 15px rgba(0,0,0,0.4);}
-            #pm-viewer-img { max-width: 90%; max-height: 90%; object-fit: contain; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); }
-            .pm-progress-wrap { background: #222; padding: 30px 40px; border-radius: 16px; border: 1px solid #ff6b9d; display: flex; flex-direction: column; align-items: center; min-width: 350px; box-shadow: 0 10px 40px rgba(0,0,0,0.9); }
-            .pm-progress-bar-container { width: 100%; height: 10px; background: #111; border-radius: 5px; overflow: hidden; margin-bottom: 15px; border: 1px solid #444; }
-            #pm-progress-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #ff6b9d, #ff8dae); transition: width 0.3s ease; }
-            .pm-drag-over-tab { border-bottom-color: #f44336 !important; background: rgba(244,67,54,0.2) !important; }
-            .pm-drag-over-cat { border: 1px dashed #ff6b9d !important; background: rgba(255,107,157,0.05) !important; }
-            .pm-drag-over-mode { border-top: 2px solid #ff6b9d !important; background: rgba(255,107,157,0.2) !important; transform: translateY(2px); }
-        `;
-        document.head.appendChild(style);
-
-        const createModal = document.createElement("div"); createModal.className = "pm-modal-overlay"; createModal.id = "pm-create-modal";
-        createModal.innerHTML = `
-            <div class="pm-create-box">
-                <div class="pm-create-header"><b style="color:#ff6b9d;">新建卡片</b><button class="pm-close-btn" onclick="pmHideModal('pm-create-modal')">关闭</button></div>
-                <div class="pm-create-tabs">
-                    <button class="pm-ct-btn active" id="ct-btn-img" onclick="switchCreateTab('img')">图片批量上传</button>
-                    <button class="pm-ct-btn" id="ct-btn-txt" onclick="switchCreateTab('txt')">单文本创建</button>
-                    <button class="pm-ct-btn" id="ct-btn-file" onclick="switchCreateTab('file')">TXT导入</button>
-                </div>
-                <div class="pm-create-content">
-                    <div id="ct-content-img" style="display:block;">
-                        <p style="color:#888; margin-bottom:15px;">选择多张图片以去后缀文件名自动创建卡片。</p>
-                        <button class="pm-action-btn primary" style="width:100%; padding:12px;" onclick="document.getElementById('pm-hidden-create-img').click()">选择图片...</button>
-                        <input type="file" id="pm-hidden-create-img" multiple accept="image/*" style="display:none;">
-                    </div>
-                    <div id="ct-content-txt" style="display:none;">
-                        <input type="text" id="pm-create-single-input" class="pm-input-text" placeholder="输入 Prompt...">
-                        <button class="pm-action-btn primary" style="width:100%; margin-top:20px; padding:12px;" onclick="createSinglePrompt()">确认创建</button>
-                    </div>
-                    <div id="ct-content-file" style="display:none;">
-                        <p style="color:#888; margin-bottom:15px;">上传 .txt 自动按逗号分割批量创建。</p>
-                        <button class="pm-action-btn primary" style="width:100%; padding:12px;" onclick="document.getElementById('pm-hidden-create-txt').click()">选择 TXT...</button>
-                        <input type="file" id="pm-hidden-create-txt" accept=".txt" style="display:none;">
-                    </div>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(createModal);
-
-        const importModal = document.createElement("div"); importModal.className = "pm-modal-overlay"; importModal.id = "pm-import-modal"; importModal.style.zIndex = "20002";
-        importModal.innerHTML = `
-            <div class="pm-create-box" style="width: 550px;">
-                <div class="pm-create-header"><b style="color:#ff6b9d;">数据导入</b><button class="pm-close-btn" onclick="pmHideModal('pm-import-modal')">关闭</button></div>
-                <div class="pm-create-content" style="padding: 20px;">
-                    <div style="background: rgba(255,107,157,0.1); padding:10px; border-radius:8px; margin-bottom:15px; border: 1px dashed rgba(255,107,157,0.3);">
-                        <span style="font-weight:bold; color:#ff6b9d; display:block; margin-bottom:5px;">包含分类数: <span id="pm-import-ctx-count"></span></span>
-                    </div>
-                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom: 20px;">
-                        <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #333;"><input type="radio" name="pm-import-target" value="current_tab" checked><div><div style="color:#ff6b9d;font-weight:bold;">导入当前一级分类大标签</div></div></label>
-                        <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #333;"><input type="radio" name="pm-import-target" value="current_mode"><div><div style="color:#ccc;font-weight:bold;">强行合并到当前三级分类</div></div></label>
-                        <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #333;"><input type="radio" name="pm-import-target" value="original"><div><div style="color:#ccc;font-weight:bold;">原路严格恢复</div></div></label>
-                    </div>
-                    <div style="border-top:1px dashed #444; padding-top:15px;">
-                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:bold; color:#ff6b9d;"><input type="checkbox" id="pm-import-merge-check" checked> 与目标位置的现有数据进行追加合并</label>
-                    </div>
-                    <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-top:20px;" onclick="executeImportFinal()">开始导入</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(importModal);
-
-        const exportModal = document.createElement("div"); exportModal.className = "pm-modal-overlay"; exportModal.id = "pm-export-modal"; exportModal.style.zIndex = "20002";
-        exportModal.innerHTML = `
-            <div class="pm-create-box" style="width: 500px;">
-                <div class="pm-create-header"><b style="color:#ff6b9d;">导出数据</b><button class="pm-close-btn" onclick="pmHideModal('pm-export-modal')">关闭</button></div>
-                <div class="pm-create-content" style="padding: 20px;">
-                    <label style="color:#ccc; font-weight:bold; margin-bottom:10px; display:block;">选择导出范围</label>
-                    <select id="pm-export-scope" class="pm-scope-select" style="width:100%; margin-bottom:20px;">
-                        <option value="all">导出全库 (所有一级分类)</option>
-                        <option value="model">导出当前一级分类 (全部子类)</option>
-                        <option value="category">导出当前二级分类</option>
-                        <option value="mode">导出当前三级分类</option>
-                    </select>
-                    
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:bold; color:#ff6b9d;">
-                        <input type="checkbox" id="pm-export-img-check" checked> 包含图片数据 (体积较大)
-                    </label>
-                    <p style="font-size:12px; color:#888; margin-top:10px; line-height:1.5;">* 如果取消勾选图片，将仅导出纯文本的属性、收藏夹分组、组合预设等配置信息。该选项极大地缩小了文件体积。</p>
-                    
-                    <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-top:20px;" onclick="PM_Global.ui.executeExport()">生成并下载 JSON</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(exportModal);
-
-        const backupModal = document.createElement("div"); backupModal.className = "pm-modal-overlay"; backupModal.id = "pm-backup-modal"; backupModal.style.zIndex = "20002";
-        backupModal.innerHTML = `
-            <div class="pm-create-box" style="width: 500px;">
-                <div class="pm-create-header"><b style="color:#ff6b9d;">系统备份与恢复</b><button class="pm-close-btn" onclick="pmHideModal('pm-backup-modal')">关闭</button></div>
-                <div class="pm-create-content" style="padding: 20px;">
-                    <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-bottom:15px; font-size:14px;" onclick="PM_Global.ui.createBackup()">+ 创建新备份 (包含图片及全部数据)</button>
-                    <div style="color:#ccc; font-weight:bold; margin-bottom:10px;">可用备份列表:</div>
-                    <div id="pm-backup-list" style="max-height:300px; overflow-y:auto; background:#111; border:1px solid #333; border-radius:8px; padding:10px;"></div>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(backupModal);
-
-        const imgViewer = document.createElement("div"); imgViewer.id = "pm-image-viewer"; imgViewer.className = "pm-modal-overlay"; imgViewer.style.zIndex = "20005";
-        imgViewer.innerHTML = `<img id="pm-viewer-img" src="">`; document.body.appendChild(imgViewer); imgViewer.onclick = () => window.pmHideModal("pm-image-viewer");
-
-        const progressOverlay = document.createElement("div"); progressOverlay.id = "pm-progress-overlay"; progressOverlay.className = "pm-modal-overlay"; progressOverlay.style.zIndex = "20005";
-        progressOverlay.innerHTML = `<div class="pm-progress-wrap"><h3 id="pm-progress-title" style="color:#ff6b9d; margin:0 0 15px 0;">处理中...</h3><div class="pm-progress-bar-container"><div id="pm-progress-fill"></div></div><div id="pm-progress-text" style="font-size:14px; color:#ccc; font-weight:bold;">0%</div></div>`;
-        document.body.appendChild(progressOverlay);
-
-        const editCardModal = document.createElement("div"); editCardModal.className = "pm-modal-overlay"; editCardModal.id = "pm-edit-card-modal"; editCardModal.style.zIndex = "20002";
-        editCardModal.innerHTML = `
-            <div class="pm-create-box" style="width: 450px;">
-                <div class="pm-create-header"><b style="color:#ff6b9d;">编辑卡片</b><button class="pm-close-btn" onclick="pmHideModal('pm-edit-card-modal')">关闭</button></div>
-                <div class="pm-create-content" style="padding: 20px;">
-                    <label style="color:#ccc; font-weight:bold; margin-bottom:8px; display:block;">修改 Prompt</label>
-                    <input type="text" id="pm-edit-card-input" class="pm-input-text" style="margin-top:0; margin-bottom: 15px;">
-                    <label style="color:#ccc; font-weight:bold; margin-bottom:8px; display:block;">卡片标签 (逗号分隔)</label>
-                    <input type="text" id="pm-edit-card-tags" class="pm-input-text" style="margin-top:0; margin-bottom: 25px;">
-                    <button class="pm-action-btn primary" style="width:100%; padding:12px;" onclick="executeEditCard()">保存修改</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(editCardModal);
-
-        const batchEditModal = document.createElement("div"); batchEditModal.className = "pm-modal-overlay"; batchEditModal.id = "pm-batch-edit-modal"; batchEditModal.style.zIndex = "20002";
-        batchEditModal.innerHTML = `
-            <div class="pm-create-box" style="width: 450px;">
-                <div class="pm-create-header"><b style="color:#ff6b9d;">批量编辑</b><button class="pm-close-btn" onclick="pmHideModal('pm-batch-edit-modal')">关闭</button></div>
-                <div class="pm-create-content" style="padding: 20px;">
-                    <select id="pm-batch-action-select" class="pm-scope-select" style="width:100%; margin-bottom:15px;" onchange="PM_Global.ui.onBatchActionChange(this.value)">
-                        <option value="add-tags">批量添加标签</option>
-                        <option value="remove-tags">批量移除标签</option>
-                        <option value="add-to-group">批量加入收藏分组</option>
-                        <option value="remove-from-group">批量移出收藏分组</option>
-                    </select>
-                    <div id="pm-batch-tag-div">
-                        <input type="text" id="pm-batch-tag-input" class="pm-search-input" style="width:100%; margin-bottom:15px;" placeholder="输入标签，用逗号分隔">
-                    </div>
-                    <div id="pm-batch-group-div" style="display:none; margin-bottom:15px;">
-                        <select id="pm-batch-group-select" class="pm-scope-select" style="width:100%;"></select>
-                    </div>
-                    <p style="font-size:12px; color:#888; margin-bottom:20px;">将影响当前选中的 <span id="pm-batch-affect-count" style="color:#ff6b9d; font-weight:bold;">0</span> 个项目。</p>
-                    <button class="pm-action-btn primary" style="width:100%; padding:12px; font-size:14px;" onclick="PM_Global.ui.executeBatchEdit()">确认执行</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(batchEditModal);
-
-        window.openEditCardModal = function(item, ctx) {
-            STATE.currentEditCardTarget = { item, ctx };
-            document.getElementById("pm-edit-card-input").value = item;
-            const tags = STATE.localDB.contexts[ctx]?.metadata?.[item]?.tags || [];
-            document.getElementById("pm-edit-card-tags").value = tags.join(", ");
-            window.pmShowModal("pm-edit-card-modal");
-        };
-    }
 
     if (!container) {
-        container = document.createElement("div"); container.id = "pm-native-modal";
-        let initCompRate = STATE.localDB.settings?.compress_rate ?? 0.85;
-        let initCompPct = Math.round(initCompRate * 100);
-        let initMaxWidth = STATE.localDB.settings?.max_width ?? 900;
+        // 1. 动态挂载外部 CSS 样式表
+        if (!document.getElementById("pm-native-style")) {
+            const link = document.createElement("link");
+            link.id = "pm-native-style"; link.rel = "stylesheet"; link.type = "text/css";
+            link.href = new URL("./prompt_manager.css", import.meta.url).href;
+            document.head.appendChild(link);
+        }
 
-        container.innerHTML = `
-            <div class="pm-header" id="pm-header"><span style="font-weight: bold; font-size: 15px; color:#fff;">Prompt 浏览器</span><button class="pm-close-btn" id="pm-close-btn">关闭界面 (ESC)</button></div>
-            <div class="pm-tabs" id="pm-tabs"></div>
-            <div class="pm-body">
-                <div class="pm-sidebar" id="pm-sidebar">
-                    <div class="pm-sidebar-scroll" id="pm-sidebar-scroll"></div>
-                    <div class="pm-sidebar-footer">
-                        <div class="pm-sidebar-group">
-                            <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-workspace', this)">
-                                <span>工作区与操作</span><span style="transition:0.2s; transform:rotate(0deg); font-size:10px; color:#ff6b9d;">▼</span>
-                            </div>
-                            <div id="sect-workspace">
-                                <div class="pm-btn-row">
-                                    <button class="pm-action-btn" style="flex:1; color:#f8961e; border-color:#835213;" onclick="PM_Global.ui.openGroupsModal()">收藏管理</button>
-                                    <button class="pm-action-btn" style="flex:1; color:#a78bfa; border-color:#534383;" onclick="PM_Global.ui.openCombosModal()">组合管理</button>
-                                </div>
-                                <div class="pm-btn-row">
-                                    <button class="pm-action-btn primary" style="flex:1;" id="pm-btn-add-card">新建卡片</button>
-                                    <button class="pm-action-btn" style="flex:1;" id="pm-btn-batch">批量操作</button>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="pm-sidebar-group">
-                            <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-backup', this)">
-                                <span>数据与备份</span><span style="transition:0.2s; transform:rotate(-90deg); font-size:10px; color:#ff6b9d;">▼</span>
-                            </div>
-                            <div id="sect-backup" style="display:none;">
-                                <div class="pm-btn-row">
-                                    <button class="pm-action-btn" style="flex:1;" id="pm-btn-import">导入配置</button>
-                                    <button class="pm-action-btn" style="flex:1;" id="pm-btn-export">导出配置</button>
-                                </div>
-                                <div class="pm-btn-row">
-                                    <button class="pm-action-btn primary" style="flex:1; border-color:#ff6b9d;" id="pm-btn-backup">管理系统备份</button>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="pm-sidebar-group" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
-                            <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-settings', this)">
-                                <span>图片压缩设置</span><span style="transition:0.2s; transform:rotate(-90deg); font-size:10px; color:#ff6b9d;">▼</span>
-                            </div>
-                            <div id="sect-settings" style="display:none;">
-                                <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>压缩率</span> <span id="pm-comp-val" style="color:#ff6b9d;">${initCompPct}%</span></div>
-                                <input type="range" id="pm-comp-slider" min="10" max="100" value="${initCompPct}" style="width:100%; cursor:pointer;">
-                                <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; margin-bottom:5px;">
-                                    <span>最大宽度</span>
-                                    <div style="display:flex; align-items:center; gap:4px; color:#aaa; font-size:12px; font-weight:normal;">
-                                        <input type="number" id="pm-width-input" value="${initMaxWidth}" min="100" max="4096" style="width:55px; background:#111; border:1px solid #444; color:#ff6b9d; border-radius:4px; text-align:center;"> px
-                                    </div>
-                                </div>
-                                <input type="range" id="pm-width-slider" min="100" max="4096" step="10" value="${initMaxWidth}" style="width:100%; cursor:pointer;">
-                            </div>
-                        </div>
-                        <input type="file" id="pm-hidden-import" accept=".json" style="display:none;">
-                        <input type="file" id="pm-hidden-append-img" multiple accept="image/*" style="display:none;">
-                    </div>
+        // 2. 独立构建所有隐藏的弹窗模态框 (解耦分离)
+        buildAllModals();
+
+        // 3. 构建主面板结构
+        container = buildMainContainer();
+        document.body.appendChild(container);
+
+        // 4. 绑定所有全局事件与交互
+        bindBrowserEvents(container);
+
+        // 5. 初始化附加组件
+        setupMarquee();
+        setupShortcuts();
+    } else {
+        container.style.display = "flex";
+        window.exitBatchMode();
+    }
+    
+    renderModelTabs();
+}
+
+// ==========================================
+// UI 模块 1：构建所有附属弹窗
+// ==========================================
+function buildAllModals() {
+    if (document.getElementById("pm-create-modal")) return;
+
+    const createModal = document.createElement("div"); createModal.className = "pm-modal-overlay"; createModal.id = "pm-create-modal";
+    createModal.innerHTML = `
+        <div class="pm-create-box">
+            <div class="pm-create-header"><b style="color:#ff6b9d;">新建卡片</b><button class="pm-close-btn" onclick="pmHideModal('pm-create-modal')">关闭</button></div>
+            <div class="pm-create-tabs">
+                <button class="pm-ct-btn active" id="ct-btn-img" onclick="switchCreateTab('img')">图片批量上传</button>
+                <button class="pm-ct-btn" id="ct-btn-txt" onclick="switchCreateTab('txt')">单文本创建</button>
+                <button class="pm-ct-btn" id="ct-btn-file" onclick="switchCreateTab('file')">TXT导入</button>
+            </div>
+            <div class="pm-create-content">
+                <div id="ct-content-img" style="display:block;">
+                    <p style="color:#888; margin-bottom:15px;">选择多张图片以去后缀文件名自动创建卡片。</p>
+                    <button class="pm-action-btn primary" style="width:100%; padding:12px;" onclick="document.getElementById('pm-hidden-create-img').click()">选择图片...</button>
+                    <input type="file" id="pm-hidden-create-img" multiple accept="image/*" style="display:none;">
                 </div>
-                <div class="pm-main-container">
-                    <div class="pm-toolbar">
-                        <input type="text" class="pm-search-input" id="pm-search-input" placeholder="输入提示词搜索... (Ctrl+F)">
-                        <select class="pm-scope-select" id="pm-search-scope">
-                            <option value="mode">搜索: 当前三级分类</option><option value="category">搜索: 当前二级分类</option><option value="model">搜索: 当前一级分类</option>
-                        </select>
-                        <select class="pm-scope-select" id="pm-sort-select">
-                            <option value="name_asc">排序: 名称升序</option>
-                            <option value="name_desc">排序: 名称降序</option>
-                            <option value="img_first">排序: 有图优先</option>
-                            <option value="img_last">排序: 无图优先</option>
-                        </select>
-                        <div class="pm-toolbar-right"><span style="font-size:12px; color:#aaa;">尺寸调节</span><input type="range" class="pm-zoom-slider" id="pm-zoom-slider" min="140" max="300" value="180"></div>
-                    </div>
-                    <div class="pm-main" id="pm-main"><div id="pm-marquee"></div></div>
-                    <div class="pm-batch-bar" id="pm-batch-bar">
-                        <span style="font-size:14px; color:#ff6b9d; font-weight:bold;" id="pm-batch-count">已选择: 0</span>
-                        <div style="display:flex; gap:10px;">
-                            <button class="pm-action-btn" style="color:#fff; border-color:#ff6b9d;" onclick="toggleSelectAll()">全选/反选</button>
-                            <button class="pm-action-btn" style="color:#a78bfa; border-color:#534383;" onclick="PM_Global.ui.openBatchEditModal()">批量编辑</button>
-                            <button class="pm-action-btn" style="color:#f44336; border-color:#552222;" onclick="executeBatchDelete()">彻底删除选中项</button>
-                            <button class="pm-action-btn" onclick="exitBatchMode()">退出批量 (ESC)</button>
+                <div id="ct-content-txt" style="display:none;">
+                    <input type="text" id="pm-create-single-input" class="pm-input-text" placeholder="输入 Prompt...">
+                    <button class="pm-action-btn primary" style="width:100%; margin-top:20px; padding:12px;" onclick="createSinglePrompt()">确认创建</button>
+                </div>
+                <div id="ct-content-file" style="display:none;">
+                    <p style="color:#888; margin-bottom:15px;">上传 .txt 自动按逗号分割批量创建。</p>
+                    <button class="pm-action-btn primary" style="width:100%; padding:12px;" onclick="document.getElementById('pm-hidden-create-txt').click()">选择 TXT...</button>
+                    <input type="file" id="pm-hidden-create-txt" accept=".txt" style="display:none;">
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(createModal);
+
+    const importModal = document.createElement("div"); importModal.className = "pm-modal-overlay"; importModal.id = "pm-import-modal"; importModal.style.zIndex = "20002";
+    importModal.innerHTML = `
+        <div class="pm-create-box" style="width: 550px;">
+            <div class="pm-create-header"><b style="color:#ff6b9d;">数据导入</b><button class="pm-close-btn" onclick="pmHideModal('pm-import-modal')">关闭</button></div>
+            <div class="pm-create-content" style="padding: 20px;">
+                <div style="background: rgba(255,107,157,0.1); padding:10px; border-radius:8px; margin-bottom:15px; border: 1px dashed rgba(255,107,157,0.3);">
+                    <span style="font-weight:bold; color:#ff6b9d; display:block; margin-bottom:5px;">包含分类数: <span id="pm-import-ctx-count"></span></span>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:10px; margin-bottom: 20px;">
+                    <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #333;"><input type="radio" name="pm-import-target" value="current_tab" checked><div><div style="color:#ff6b9d;font-weight:bold;">导入当前一级分类大标签</div></div></label>
+                    <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #333;"><input type="radio" name="pm-import-target" value="current_mode"><div><div style="color:#ccc;font-weight:bold;">强行合并到当前三级分类</div></div></label>
+                    <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; background: #1a1a1a; padding: 10px; border-radius: 8px; border: 1px solid #333;"><input type="radio" name="pm-import-target" value="original"><div><div style="color:#ccc;font-weight:bold;">原路严格恢复</div></div></label>
+                </div>
+                <div style="border-top:1px dashed #444; padding-top:15px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:bold; color:#ff6b9d;"><input type="checkbox" id="pm-import-merge-check" checked> 与目标位置的现有数据进行追加合并</label>
+                </div>
+                <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-top:20px;" onclick="executeImportFinal()">开始导入</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(importModal);
+
+    const exportModal = document.createElement("div"); exportModal.className = "pm-modal-overlay"; exportModal.id = "pm-export-modal"; exportModal.style.zIndex = "20002";
+    exportModal.innerHTML = `
+        <div class="pm-create-box" style="width: 500px;">
+            <div class="pm-create-header"><b style="color:#ff6b9d;">导出数据</b><button class="pm-close-btn" onclick="pmHideModal('pm-export-modal')">关闭</button></div>
+            <div class="pm-create-content" style="padding: 20px;">
+                <label style="color:#ccc; font-weight:bold; margin-bottom:10px; display:block;">选择导出范围</label>
+                <select id="pm-export-scope" class="pm-scope-select" style="width:100%; margin-bottom:20px;">
+                    <option value="all">导出全库 (所有一级分类)</option>
+                    <option value="model">导出当前一级分类 (全部子类)</option>
+                    <option value="category">导出当前二级分类</option>
+                    <option value="mode">导出当前三级分类</option>
+                </select>
+                
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:bold; color:#ff6b9d;">
+                    <input type="checkbox" id="pm-export-img-check" checked> 包含图片数据 (体积较大)
+                </label>
+                <p style="font-size:12px; color:#888; margin-top:10px; line-height:1.5;">* 如果取消勾选图片，将仅导出纯文本的属性、收藏夹分组、组合预设等配置信息。该选项极大地缩小了文件体积。</p>
+                
+                <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-top:20px;" onclick="PM_Global.ui.executeExport()">生成并下载 JSON</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(exportModal);
+
+    const backupModal = document.createElement("div"); backupModal.className = "pm-modal-overlay"; backupModal.id = "pm-backup-modal"; backupModal.style.zIndex = "20002";
+    backupModal.innerHTML = `
+        <div class="pm-create-box" style="width: 500px;">
+            <div class="pm-create-header"><b style="color:#ff6b9d;">系统备份与恢复</b><button class="pm-close-btn" onclick="pmHideModal('pm-backup-modal')">关闭</button></div>
+            <div class="pm-create-content" style="padding: 20px;">
+                <button class="pm-action-btn primary" style="width:100%; padding:12px; margin-bottom:15px; font-size:14px;" onclick="PM_Global.ui.createBackup()">+ 创建新备份 (包含图片及全部数据)</button>
+                <div style="color:#ccc; font-weight:bold; margin-bottom:10px;">可用备份列表:</div>
+                <div id="pm-backup-list" style="max-height:300px; overflow-y:auto; background:#111; border:1px solid #333; border-radius:8px; padding:10px;"></div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(backupModal);
+
+    const imgViewer = document.createElement("div"); imgViewer.id = "pm-image-viewer"; imgViewer.className = "pm-modal-overlay"; imgViewer.style.zIndex = "20005";
+    imgViewer.innerHTML = `<img id="pm-viewer-img" src="">`; document.body.appendChild(imgViewer); imgViewer.onclick = () => window.pmHideModal("pm-image-viewer");
+
+    const progressOverlay = document.createElement("div"); progressOverlay.id = "pm-progress-overlay"; progressOverlay.className = "pm-modal-overlay"; progressOverlay.style.zIndex = "20005";
+    progressOverlay.innerHTML = `<div class="pm-progress-wrap"><h3 id="pm-progress-title" style="color:#ff6b9d; margin:0 0 15px 0;">处理中...</h3><div class="pm-progress-bar-container"><div id="pm-progress-fill"></div></div><div id="pm-progress-text" style="font-size:14px; color:#ccc; font-weight:bold;">0%</div></div>`;
+    document.body.appendChild(progressOverlay);
+
+    const editCardModal = document.createElement("div"); editCardModal.className = "pm-modal-overlay"; editCardModal.id = "pm-edit-card-modal"; editCardModal.style.zIndex = "20002";
+    editCardModal.innerHTML = `
+        <div class="pm-create-box" style="width: 450px;">
+            <div class="pm-create-header"><b style="color:#ff6b9d;">编辑卡片</b><button class="pm-close-btn" onclick="pmHideModal('pm-edit-card-modal')">关闭</button></div>
+            <div class="pm-create-content" style="padding: 20px;">
+                <label style="color:#ccc; font-weight:bold; margin-bottom:8px; display:block;">修改 Prompt</label>
+                <input type="text" id="pm-edit-card-input" class="pm-input-text" style="margin-top:0; margin-bottom: 15px;">
+                <label style="color:#ccc; font-weight:bold; margin-bottom:8px; display:block;">卡片标签 (逗号分隔)</label>
+                <input type="text" id="pm-edit-card-tags" class="pm-input-text" style="margin-top:0; margin-bottom: 25px;">
+                <button class="pm-action-btn primary" style="width:100%; padding:12px;" onclick="executeEditCard()">保存修改</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(editCardModal);
+
+    const batchEditModal = document.createElement("div"); batchEditModal.className = "pm-modal-overlay"; batchEditModal.id = "pm-batch-edit-modal"; batchEditModal.style.zIndex = "20002";
+    batchEditModal.innerHTML = `
+        <div class="pm-create-box" style="width: 450px;">
+            <div class="pm-create-header"><b style="color:#ff6b9d;">批量编辑</b><button class="pm-close-btn" onclick="pmHideModal('pm-batch-edit-modal')">关闭</button></div>
+            <div class="pm-create-content" style="padding: 20px;">
+                <select id="pm-batch-action-select" class="pm-scope-select" style="width:100%; margin-bottom:15px;" onchange="PM_Global.ui.onBatchActionChange(this.value)">
+                    <option value="add-tags">批量添加标签</option>
+                    <option value="remove-tags">批量移除标签</option>
+                    <option value="add-to-group">批量加入收藏分组</option>
+                    <option value="remove-from-group">批量移出收藏分组</option>
+                </select>
+                <div id="pm-batch-tag-div">
+                    <input type="text" id="pm-batch-tag-input" class="pm-search-input" style="width:100%; margin-bottom:15px;" placeholder="输入标签，用逗号分隔">
+                </div>
+                <div id="pm-batch-group-div" style="display:none; margin-bottom:15px;">
+                    <select id="pm-batch-group-select" class="pm-scope-select" style="width:100%;"></select>
+                </div>
+                <p style="font-size:12px; color:#888; margin-bottom:20px;">将影响当前选中的 <span id="pm-batch-affect-count" style="color:#ff6b9d; font-weight:bold;">0</span> 个项目。</p>
+                <button class="pm-action-btn primary" style="width:100%; padding:12px; font-size:14px;" onclick="PM_Global.ui.executeBatchEdit()">确认执行</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(batchEditModal);
+
+    window.openEditCardModal = function(item, ctx) {
+        STATE.currentEditCardTarget = { item, ctx };
+        document.getElementById("pm-edit-card-input").value = item;
+        const tags = STATE.localDB.contexts[ctx]?.metadata?.[item]?.tags || [];
+        document.getElementById("pm-edit-card-tags").value = tags.join(", ");
+        window.pmShowModal("pm-edit-card-modal");
+    };
+}
+
+// ==========================================
+// UI 模块 2：构建主应用视图
+// ==========================================
+function buildMainContainer() {
+    const container = document.createElement("div"); 
+    container.id = "pm-native-modal";
+    
+    let initCompRate = STATE.localDB.settings?.compress_rate ?? 0.85;
+    let initCompPct = Math.round(initCompRate * 100);
+    let initMaxWidth = STATE.localDB.settings?.max_width ?? 900;
+
+    container.innerHTML = `
+        <div class="pm-header" id="pm-header"><span style="font-weight: bold; font-size: 15px; color:#fff;">Prompt 浏览器</span><button class="pm-close-btn" id="pm-close-btn">关闭界面 (ESC)</button></div>
+        <div class="pm-tabs" id="pm-tabs"></div>
+        <div class="pm-body">
+            <div class="pm-sidebar" id="pm-sidebar">
+                <div class="pm-sidebar-scroll" id="pm-sidebar-scroll"></div>
+                <div class="pm-sidebar-footer">
+                    <div class="pm-sidebar-group">
+                        <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-workspace', this)">
+                            <span>工作区与操作</span><span style="transition:0.2s; transform:rotate(0deg); font-size:10px; color:#ff6b9d;">▼</span>
                         </div>
+                        <div id="sect-workspace">
+                            <div class="pm-btn-row">
+                                <button class="pm-action-btn" style="flex:1; color:#f8961e; border-color:#835213;" onclick="PM_Global.ui.openGroupsModal()">收藏管理</button>
+                                <button class="pm-action-btn" style="flex:1; color:#a78bfa; border-color:#534383;" onclick="PM_Global.ui.openCombosModal()">组合管理</button>
+                            </div>
+                            <div class="pm-btn-row">
+                                <button class="pm-action-btn primary" style="flex:1;" id="pm-btn-add-card">新建卡片</button>
+                                <button class="pm-action-btn" style="flex:1;" id="pm-btn-batch">批量操作</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="pm-sidebar-group">
+                        <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-backup', this)">
+                            <span>数据与备份</span><span style="transition:0.2s; transform:rotate(-90deg); font-size:10px; color:#ff6b9d;">▼</span>
+                        </div>
+                        <div id="sect-backup" style="display:none;">
+                            <div class="pm-btn-row">
+                                <button class="pm-action-btn" style="flex:1;" id="pm-btn-import">导入配置</button>
+                                <button class="pm-action-btn" style="flex:1;" id="pm-btn-export">导出配置</button>
+                            </div>
+                            <div class="pm-btn-row">
+                                <button class="pm-action-btn primary" style="flex:1; border-color:#ff6b9d;" id="pm-btn-backup">管理系统备份</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="pm-sidebar-group" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
+                        <div class="pm-sidebar-label" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center;" onclick="PM_Global.ui.toggleSidebarSection('sect-settings', this)">
+                            <span>图片压缩设置</span><span style="transition:0.2s; transform:rotate(-90deg); font-size:10px; color:#ff6b9d;">▼</span>
+                        </div>
+                        <div id="sect-settings" style="display:none;">
+                            <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>压缩率</span> <span id="pm-comp-val" style="color:#ff6b9d;">${initCompPct}%</span></div>
+                            <input type="range" id="pm-comp-slider" min="10" max="100" value="${initCompPct}" style="width:100%; cursor:pointer;">
+                            <div class="pm-sidebar-label" style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; margin-bottom:5px;">
+                                <span>最大宽度</span>
+                                <div style="display:flex; align-items:center; gap:4px; color:#aaa; font-size:12px; font-weight:normal;">
+                                    <input type="number" id="pm-width-input" value="${initMaxWidth}" min="100" max="4096" style="width:55px; background:#111; border:1px solid #444; color:#ff6b9d; border-radius:4px; text-align:center;"> px
+                                </div>
+                            </div>
+                            <input type="range" id="pm-width-slider" min="100" max="4096" step="10" value="${initMaxWidth}" style="width:100%; cursor:pointer;">
+                        </div>
+                    </div>
+                    <input type="file" id="pm-hidden-import" accept=".json" style="display:none;">
+                    <input type="file" id="pm-hidden-append-img" multiple accept="image/*" style="display:none;">
+                </div>
+            </div>
+            <div class="pm-main-container">
+                <div class="pm-toolbar">
+                    <input type="text" class="pm-search-input" id="pm-search-input" placeholder="输入提示词搜索... (Ctrl+F)">
+                    <select class="pm-scope-select" id="pm-search-scope">
+                        <option value="mode">搜索: 当前三级分类</option><option value="category">搜索: 当前二级分类</option><option value="model">搜索: 当前一级分类</option>
+                    </select>
+                    <select class="pm-scope-select" id="pm-sort-select">
+                        <option value="name_asc">排序: 名称升序</option>
+                        <option value="name_desc">排序: 名称降序</option>
+                        <option value="img_first">排序: 有图优先</option>
+                        <option value="img_last">排序: 无图优先</option>
+                    </select>
+                    <div class="pm-toolbar-right"><span style="font-size:12px; color:#aaa;">尺寸调节</span><input type="range" class="pm-zoom-slider" id="pm-zoom-slider" min="140" max="300" value="180"></div>
+                </div>
+                <div class="pm-main" id="pm-main"><div id="pm-marquee"></div></div>
+                <div class="pm-batch-bar" id="pm-batch-bar">
+                    <span style="font-size:14px; color:#ff6b9d; font-weight:bold;" id="pm-batch-count">已选择: 0</span>
+                    <div style="display:flex; gap:10px;">
+                        <button class="pm-action-btn" style="color:#fff; border-color:#ff6b9d;" onclick="toggleSelectAll()">全选/反选</button>
+                        <button class="pm-action-btn" style="color:#a78bfa; border-color:#534383;" onclick="PM_Global.ui.openBatchEditModal()">批量编辑</button>
+                        <button class="pm-action-btn" style="color:#f44336; border-color:#552222;" onclick="executeBatchDelete()">彻底删除选中项</button>
+                        <button class="pm-action-btn" onclick="exitBatchMode()">退出批量 (ESC)</button>
                     </div>
                 </div>
             </div>
-        `;
-        document.body.appendChild(container);
+        </div>
+    `;
+    return container;
+}
 
-        document.getElementById("pm-comp-slider").onchange = async (e) => {
-            if (!STATE.localDB.settings) STATE.localDB.settings = {};
-            STATE.localDB.settings.compress_rate = parseInt(e.target.value) / 100;
-            await PromptAPI.saveDB(STATE.localDB); UTILS.syncImportNodeWidgets();
-        };
-        document.getElementById("pm-comp-slider").oninput = (e) => document.getElementById("pm-comp-val").innerText = e.target.value + "%";
+// ==========================================
+// UI 模块 3：绑定所有面板与全局事件
+// ==========================================
+function bindBrowserEvents(container) {
+    document.getElementById("pm-comp-slider").onchange = async (e) => {
+        if (!STATE.localDB.settings) STATE.localDB.settings = {};
+        STATE.localDB.settings.compress_rate = parseInt(e.target.value) / 100;
+        await PromptAPI.saveDB(STATE.localDB); UTILS.syncImportNodeWidgets();
+    };
+    document.getElementById("pm-comp-slider").oninput = (e) => document.getElementById("pm-comp-val").innerText = e.target.value + "%";
 
-        const updateWidth = async (val) => {
-            let num = parseInt(val); if(isNaN(num) || num<100) num=100; if(num>4096) num=4096;
-            document.getElementById("pm-width-slider").value = num; document.getElementById("pm-width-input").value = num;
-            if (!STATE.localDB.settings) STATE.localDB.settings = {}; STATE.localDB.settings.max_width = num;
-            await PromptAPI.saveDB(STATE.localDB); UTILS.syncImportNodeWidgets();
-        };
-        document.getElementById("pm-width-slider").onchange = (e) => updateWidth(e.target.value);
-        document.getElementById("pm-width-slider").oninput = (e) => document.getElementById("pm-width-input").value = e.target.value;
-        document.getElementById("pm-width-input").onchange = (e) => updateWidth(e.target.value);
+    const updateWidth = async (val) => {
+        let num = parseInt(val); if(isNaN(num) || num<100) num=100; if(num>4096) num=4096;
+        document.getElementById("pm-width-slider").value = num; document.getElementById("pm-width-input").value = num;
+        if (!STATE.localDB.settings) STATE.localDB.settings = {}; STATE.localDB.settings.max_width = num;
+        await PromptAPI.saveDB(STATE.localDB); UTILS.syncImportNodeWidgets();
+    };
+    document.getElementById("pm-width-slider").onchange = (e) => updateWidth(e.target.value);
+    document.getElementById("pm-width-slider").oninput = (e) => document.getElementById("pm-width-input").value = e.target.value;
+    document.getElementById("pm-width-input").onchange = (e) => updateWidth(e.target.value);
 
-        document.getElementById("pm-close-btn").onclick = closeNativeBrowser;
-        
-        let isDraggingWin = false, offsetX = 0, offsetY = 0;
-        document.getElementById("pm-header").addEventListener("mousedown", (e) => {
-            if (e.target.tagName.toLowerCase() === 'button') return;
-            isDraggingWin = true; offsetX = e.clientX - container.offsetLeft; offsetY = e.clientY - container.offsetTop;
-        });
-        window.addEventListener("mousemove", (e) => { if (isDraggingWin) { container.style.left = (e.clientX - offsetX) + "px"; container.style.top = (e.clientY - offsetY) + "px"; } });
-        window.addEventListener("mouseup", () => isDraggingWin = false);
+    document.getElementById("pm-close-btn").onclick = closeNativeBrowser;
+    
+    // 窗口拖拽逻辑
+    let isDraggingWin = false, offsetX = 0, offsetY = 0;
+    document.getElementById("pm-header").addEventListener("mousedown", (e) => {
+        if (e.target.tagName.toLowerCase() === 'button') return;
+        isDraggingWin = true; offsetX = e.clientX - container.offsetLeft; offsetY = e.clientY - container.offsetTop;
+    });
+    window.addEventListener("mousemove", (e) => { if (isDraggingWin) { container.style.left = (e.clientX - offsetX) + "px"; container.style.top = (e.clientY - offsetY) + "px"; } });
+    window.addEventListener("mouseup", () => isDraggingWin = false);
 
-        let searchTimeout;
-        document.getElementById("pm-search-input").oninput = (e) => { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { STATE.searchQuery = e.target.value.toLowerCase().trim(); renderGrid(); }, 300); };
-        document.getElementById("pm-search-scope").onchange = (e) => { STATE.searchScope = e.target.value; renderGrid(); };
-        document.getElementById("pm-sort-select").onchange = (e) => { STATE.sortMode = e.target.value; renderGrid(); };
-        document.getElementById("pm-zoom-slider").oninput = () => renderGrid();
+    let searchTimeout;
+    document.getElementById("pm-search-input").oninput = (e) => { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { STATE.searchQuery = e.target.value.toLowerCase().trim(); renderGrid(); }, 300); };
+    document.getElementById("pm-search-scope").onchange = (e) => { STATE.searchScope = e.target.value; renderGrid(); };
+    document.getElementById("pm-sort-select").onchange = (e) => { STATE.sortMode = e.target.value; renderGrid(); };
+    document.getElementById("pm-zoom-slider").oninput = () => renderGrid();
 
-        document.getElementById("pm-btn-batch").onclick = () => { 
-            STATE.isBatchMode = true; 
-            STATE.batchSelection.clear(); 
-            document.getElementById("pm-batch-bar").classList.add("active"); 
-            document.getElementById("pm-main").classList.add("batch-active");
-            renderGrid(); 
-        };
-        document.getElementById("pm-btn-export").onclick = () => {
-            window.pmShowModal("pm-export-modal");
-        };
-        document.getElementById("pm-btn-backup").onclick = () => PM_Global.ui.openBackupModal();
+    // 侧边栏各种按钮事件
+    document.getElementById("pm-btn-batch").onclick = () => { 
+        STATE.isBatchMode = true; 
+        STATE.batchSelection.clear(); 
+        document.getElementById("pm-batch-bar").classList.add("active"); 
+        document.getElementById("pm-main").classList.add("batch-active");
+        renderGrid(); 
+    };
+    document.getElementById("pm-btn-export").onclick = () => window.pmShowModal("pm-export-modal");
+    document.getElementById("pm-btn-backup").onclick = () => PM_Global.ui.openBackupModal();
 
-        window.PM_Global.ui.openBackupModal = async function() {
-            window.pmShowModal("pm-backup-modal");
-            const list = document.getElementById("pm-backup-list");
-            list.innerHTML = "<div style='color:#666; text-align:center;'>加载中...</div>";
-            try {
-                const res = await fetch("/api/prompt-manager/backup/list");
-                const data = await res.json();
-                if (data.success) {
-                    list.innerHTML = "";
-                    if (data.backups.length === 0) list.innerHTML = "<div style='color:#666; text-align:center;'>暂无备份</div>";
-                    data.backups.forEach(b => {
-                        const dateStr = new Date(b.time * 1000).toLocaleString();
-                        const item = document.createElement("div");
-                        item.className = "pm-list-item";
-                        item.style.padding = "10px";
-                        item.innerHTML = `
-                            <div>
-                                <div style="color:#ddd; font-weight:bold;">${b.name}</div>
-                                <div style="color:#888; font-size:11px;">大小: ${b.size} MB | 时间: ${dateStr}</div>
-                            </div>
-                            <button class="pm-text-btn danger" onclick="PM_Global.ui.restoreBackup('${b.name}')">恢复此备份</button>
-                        `;
-                        list.appendChild(item);
-                    });
-                }
-            } catch(e) { list.innerHTML = "<div style='color:#f44336; text-align:center;'>加载失败</div>"; }
-        };
+    window.PM_Global.ui.openBackupModal = async function() {
+        window.pmShowModal("pm-backup-modal");
+        const list = document.getElementById("pm-backup-list");
+        list.innerHTML = "<div style='color:#666; text-align:center;'>加载中...</div>";
+        try {
+            const res = await fetch("/api/prompt-manager/backup/list");
+            const data = await res.json();
+            if (data.success) {
+                list.innerHTML = "";
+                if (data.backups.length === 0) list.innerHTML = "<div style='color:#666; text-align:center;'>暂无备份</div>";
+                data.backups.forEach(b => {
+                    const dateStr = new Date(b.time * 1000).toLocaleString();
+                    const item = document.createElement("div"); item.className = "pm-list-item"; item.style.padding = "10px";
+                    item.innerHTML = `
+                        <div>
+                            <div style="color:#ddd; font-weight:bold;">${b.name}</div>
+                            <div style="color:#888; font-size:11px;">大小: ${b.size} MB | 时间: ${dateStr}</div>
+                        </div>
+                        <button class="pm-text-btn danger" onclick="PM_Global.ui.restoreBackup('${b.name}')">恢复此备份</button>
+                    `;
+                    list.appendChild(item);
+                });
+            }
+        } catch(e) { list.innerHTML = "<div style='color:#f44336; text-align:center;'>加载失败</div>"; }
+    };
 
-        window.PM_Global.ui.createBackup = async function() {
-            const name = prompt("请输入备份名称 (留空则默认按当前时间命名):");
-            if (name === null) return;
-            UI.updateProgress("正在创建备份...", "打包图片与配置，这可能需要一点时间");
-            try {
-                const res = await fetch("/api/prompt-manager/backup/create", { method: 'POST', body: JSON.stringify({name: name || undefined}) });
-                const data = await res.json();
-                UI.hideProgress();
-                if (data.success) { alert("备份成功！文件已存入 backup 文件夹。"); PM_Global.ui.openBackupModal(); }
-                else alert("备份失败: " + data.error);
-            } catch(e) { UI.hideProgress(); alert("请求失败"); }
-        };
+    window.PM_Global.ui.createBackup = async function() {
+        const name = prompt("请输入备份名称 (留空则默认按当前时间命名):");
+        if (name === null) return;
+        UI.updateProgress("正在创建备份...", "打包图片与配置，这可能需要一点时间");
+        try {
+            const res = await fetch("/api/prompt-manager/backup/create", { method: 'POST', body: JSON.stringify({name: name || undefined}) });
+            const data = await res.json();
+            UI.hideProgress();
+            if (data.success) { alert("备份成功！文件已存入 backup 文件夹。"); PM_Global.ui.openBackupModal(); }
+            else alert("备份失败: " + data.error);
+        } catch(e) { UI.hideProgress(); alert("请求失败"); }
+    };
 
-        window.PM_Global.ui.restoreBackup = async function(filename) {
-            if (!confirm("⚠ 危险操作警告 ⚠\n确定要恢复此备份吗？\n当前的【所有图片和提示词配置】将被格式化并彻底覆盖！")) return;
-            UI.updateProgress("正在恢复备份...", "正在解压文件，请绝对不要关闭窗口！");
-            try {
-                const res = await fetch("/api/prompt-manager/backup/restore", { method: 'POST', body: JSON.stringify({filename}) });
-                const data = await res.json();
-                UI.hideProgress();
-                if (data.success) { 
-                    alert("恢复成功！ComfyUI 页面即将刷新加载新数据。"); 
-                    location.reload(); 
-                } else { alert("恢复失败: " + data.error); }
-            } catch(e) { UI.hideProgress(); alert("请求失败"); }
-        };
-        document.getElementById("pm-btn-import").onclick = () => document.getElementById("pm-hidden-import").click();
-        document.getElementById("pm-hidden-import").onchange = (e) => { if (e.target.files.length > 0) handleImportFile(e.target.files[0]); e.target.value = ''; };
-        
-        document.getElementById("pm-btn-add-card").onclick = () => {
-            if (!STATE.currentModelId || !STATE.currentModeId) return alert("请先选择三级分类！");
-            window.pmShowModal("pm-create-modal");
-        };
-        document.getElementById("pm-hidden-create-img").onchange = async (e) => { if (e.target.files.length > 0) await handleBatchCreateImages(e.target.files); e.target.value = ''; };
-        document.getElementById("pm-hidden-create-txt").onchange = async (e) => { if (e.target.files.length > 0) await handleCreateTXT(e.target.files[0]); e.target.value = ''; };
-        document.getElementById("pm-hidden-append-img").onchange = async (e) => {
-            if (e.target.files.length === 0 || !STATE.currentAppendTarget) return;
-            await executeAppendImages(e.target.files, STATE.currentAppendTarget.item, STATE.currentAppendTarget.ctx); e.target.value = ''; 
-        };
+    window.PM_Global.ui.restoreBackup = async function(filename) {
+        if (!confirm("⚠ 危险操作警告 ⚠\n确定要恢复此备份吗？\n当前的【所有图片和提示词配置】将被格式化并彻底覆盖！")) return;
+        UI.updateProgress("正在恢复备份...", "正在解压文件，请绝对不要关闭窗口！");
+        try {
+            const res = await fetch("/api/prompt-manager/backup/restore", { method: 'POST', body: JSON.stringify({filename}) });
+            const data = await res.json();
+            UI.hideProgress();
+            if (data.success) { alert("恢复成功！ComfyUI 页面即将刷新加载新数据。"); location.reload(); } 
+            else { alert("恢复失败: " + data.error); }
+        } catch(e) { UI.hideProgress(); alert("请求失败"); }
+    };
 
-        setupMarquee(); setupShortcuts();
-
-    } else { container.style.display = "flex"; window.exitBatchMode(); }
-    renderModelTabs();
+    document.getElementById("pm-btn-import").onclick = () => document.getElementById("pm-hidden-import").click();
+    document.getElementById("pm-hidden-import").onchange = (e) => { if (e.target.files.length > 0) handleImportFile(e.target.files[0]); e.target.value = ''; };
+    
+    document.getElementById("pm-btn-add-card").onclick = () => {
+        if (!STATE.currentModelId || !STATE.currentModeId) return alert("请先选择三级分类！");
+        window.pmShowModal("pm-create-modal");
+    };
+    document.getElementById("pm-hidden-create-img").onchange = async (e) => { if (e.target.files.length > 0) await handleBatchCreateImages(e.target.files); e.target.value = ''; };
+    document.getElementById("pm-hidden-create-txt").onchange = async (e) => { if (e.target.files.length > 0) await handleCreateTXT(e.target.files[0]); e.target.value = ''; };
+    document.getElementById("pm-hidden-append-img").onchange = async (e) => {
+        if (e.target.files.length === 0 || !STATE.currentAppendTarget) return;
+        await executeAppendImages(e.target.files, STATE.currentAppendTarget.item, STATE.currentAppendTarget.ctx); e.target.value = ''; 
+    };
 }
 
 window.exitBatchMode = function() {
@@ -926,11 +881,28 @@ window.toggleSelectAll = function() {
     const main = document.getElementById("pm-main");
     const cards = main.querySelectorAll(".pm-selectable-card");
     if (cards.length === 0) return;
+    
     let visibleSelected = 0;
-    cards.forEach(c => { if (STATE.batchSelection.has(`${c.dataset.ctx}||${c.dataset.item}`)) visibleSelected++; });
-    if (visibleSelected === cards.length) cards.forEach(c => STATE.batchSelection.delete(`${c.dataset.ctx}||${c.dataset.item}`));
-    else cards.forEach(c => STATE.batchSelection.add(`${c.dataset.ctx}||${c.dataset.item}`));
-    document.getElementById("pm-batch-count").innerText = `已选择: ${STATE.batchSelection.size}`; renderGrid();
+    cards.forEach(c => { 
+        // 修复 Bug 2：全选时必须解码
+        const item = decodeURIComponent(c.dataset.item);
+        if (STATE.batchSelection.has(`${c.dataset.ctx}||${item}`)) visibleSelected++; 
+    });
+
+    if (visibleSelected === cards.length) {
+        cards.forEach(c => {
+            const item = decodeURIComponent(c.dataset.item);
+            STATE.batchSelection.delete(`${c.dataset.ctx}||${item}`);
+            c.classList.remove("batch-selected"); // 直接操作 DOM，避免重绘闪烁
+        });
+    } else {
+        cards.forEach(c => {
+            const item = decodeURIComponent(c.dataset.item);
+            STATE.batchSelection.add(`${c.dataset.ctx}||${item}`);
+            c.classList.add("batch-selected");
+        });
+    }
+    document.getElementById("pm-batch-count").innerText = `已选择: ${STATE.batchSelection.size}`;
 };
 
 window.executeBatchDelete = async function() {
@@ -1106,10 +1078,14 @@ function renderSidebar() {
     if (STATE.currentModeId) renderGrid();
 }
 
+/* =====================================================================
+ * UI 模块 4：高性能视图渲染 (Virtual Templating & Event Delegation)
+ * ===================================================================== */
 function renderGrid() {
     const main = document.getElementById("pm-main");
-    main.innerHTML = '<div id="pm-marquee"></div>';
     const zoomSize = document.getElementById("pm-zoom-slider") ? document.getElementById("pm-zoom-slider").value : 180;
+    
+    // 初始化 Grid 样式与基础元素
     main.style.gridTemplateColumns = `repeat(auto-fill, minmax(${zoomSize}px, 1fr))`;
 
     let targetCtxs = [];
@@ -1136,83 +1112,44 @@ function renderGrid() {
         }
     });
 
-    if (allItems.length === 0) return main.innerHTML += '<div style="color:#555; grid-column: 1 / -1; margin-top:10px;">空空如也。</div>';
+    if (allItems.length === 0) {
+        main.innerHTML = '<div id="pm-marquee"></div><div style="color:#555; grid-column: 1 / -1; margin-top:10px;">空空如也。</div>';
+        return;
+    }
 
+    // 排序逻辑
     const sortMode = STATE.sortMode || "name_asc";
     allItems.sort((a, b) => {
-        if (sortMode === "name_asc") {
-            return a.item.localeCompare(b.item, 'zh-CN');
-        } else if (sortMode === "name_desc") {
-            return b.item.localeCompare(a.item, 'zh-CN');
-        } else if (sortMode === "img_first" || sortMode === "img_last") {
+        if (sortMode === "name_asc") return a.item.localeCompare(b.item, 'zh-CN');
+        if (sortMode === "name_desc") return b.item.localeCompare(a.item, 'zh-CN');
+        if (sortMode === "img_first" || sortMode === "img_last") {
             const aHasImg = (STATE.localDB.images[`${a.ctx}_${a.item}`]?.length > 0) ? 1 : 0;
             const bHasImg = (STATE.localDB.images[`${b.ctx}_${b.item}`]?.length > 0) ? 1 : 0;
-            if (aHasImg !== bHasImg) {
-                return sortMode === "img_first" ? bHasImg - aHasImg : aHasImg - bHasImg;
-            }
+            if (aHasImg !== bHasImg) return sortMode === "img_first" ? bHasImg - aHasImg : aHasImg - bHasImg;
             return a.item.localeCompare(b.item, 'zh-CN');
         }
         return 0;
     });
 
     let activePrompts = [];
-    if (STATE.currentActiveWidget && STATE.currentActiveWidget.value) activePrompts = UTILS.parsePromptText(STATE.currentActiveWidget.value).map(p => p.tag);
+    if (STATE.currentActiveWidget && STATE.currentActiveWidget.value) {
+        activePrompts = UTILS.parsePromptText(STATE.currentActiveWidget.value).map(p => p.tag);
+    }
+
+    // [核心优化]：使用大块 HTML 模板字符串，彻底消除逐个创建 DOM 节点的性能损耗
+    let htmlChunks = ['<div id="pm-marquee"></div>'];
 
     allItems.forEach(({ item, ctx }) => {
-        const imgKey = `${ctx}_${item}`; const imgList = STATE.localDB.images?.[imgKey] || [];
+        const imgKey = `${ctx}_${item}`;
+        const imgList = STATE.localDB.images?.[imgKey] || [];
         const isSelectedInBatch = STATE.batchSelection.has(`${ctx}||${item}`);
         const isInWidget = activePrompts.includes(item);
-
-        const card = document.createElement("div"); card.className = "pm-card pm-selectable-card"; card.dataset.ctx = ctx; card.dataset.item = item;
-        if (STATE.isBatchMode && isSelectedInBatch) card.classList.add("batch-selected");
-        else if (!STATE.isBatchMode && isInWidget) card.classList.add("in-prompt");
-
-        const imgWrap = document.createElement("div"); imgWrap.className = "pm-card-img-wrap";
-        let currentImgIndex = 0;
-
-        if (imgList.length > 0) {
-            const imgEl = document.createElement("img"); imgEl.src = imgList[0]; imgEl.style.cursor = "pointer";
-            imgEl.onclick = (e) => { if (STATE.isBatchMode) return; e.stopPropagation(); document.getElementById('pm-viewer-img').src = imgList[currentImgIndex]; window.pmShowModal("pm-image-viewer"); };
-            imgWrap.appendChild(imgEl);
-            
-            const delImgBtn = document.createElement("button"); delImgBtn.className = "pm-del-img-btn"; delImgBtn.innerHTML = "×";
-            delImgBtn.onclick = async (e) => {
-                e.stopPropagation();
-                if (confirm("仅彻底删除当前显示的这张图片？")) {
-                    await PromptAPI.deleteFile(imgList[currentImgIndex]); imgList.splice(currentImgIndex, 1);
-                    STATE.localDB.images[imgKey] = imgList; await PromptAPI.saveDB(STATE.localDB); renderGrid();
-                }
-            };
-            imgWrap.appendChild(delImgBtn);
-
-            if (imgList.length > 1) {
-                const leftArrow = document.createElement("button"); leftArrow.className = "pm-nav-arrow left"; leftArrow.innerText = "◀";
-                const rightArrow = document.createElement("button"); rightArrow.className = "pm-nav-arrow right"; rightArrow.innerText = "▶";
-                leftArrow.onclick = (e) => { e.stopPropagation(); currentImgIndex = (currentImgIndex - 1 + imgList.length) % imgList.length; imgEl.src = imgList[currentImgIndex]; };
-                rightArrow.onclick = (e) => { e.stopPropagation(); currentImgIndex = (currentImgIndex + 1) % imgList.length; imgEl.src = imgList[currentImgIndex]; };
-                imgWrap.appendChild(leftArrow); imgWrap.appendChild(rightArrow);
-            }
-        } else imgWrap.innerHTML = `<div class="pm-no-img">无图 (点传图上传)</div>`;
-
-        const titleDiv = document.createElement("div"); titleDiv.className = "pm-card-title"; titleDiv.innerText = item;
-        card.appendChild(imgWrap); card.appendChild(titleDiv);
-
-        if (STATE.searchScope !== "mode") {
-            const prefix = STATE.currentModelId + "_";
-            const modId = ctx.startsWith(prefix) ? ctx.substring(prefix.length) : ctx.split('_').slice(1).join('_');
-            const mName = STATE.localDB.models.main_models[STATE.currentModelId]?.modes[modId]?.name || modId;
-            const sourceDiv = document.createElement("div"); sourceDiv.className = "pm-card-source"; sourceDiv.innerText = `[${mName}]`; card.appendChild(sourceDiv);
-        }
-
-        const tagsWrap = document.createElement("div"); tagsWrap.className = "pm-card-tags";
-        const tags = STATE.localDB.contexts[ctx]?.metadata?.[item]?.tags || [];
-        if (tags.length === 0) tagsWrap.innerHTML = '<span style="color:#555; font-style:italic;">暂无标签</span>';
-        else tags.forEach(t => { const s = document.createElement("span"); s.className = "pm-tag"; s.innerText = t; tagsWrap.appendChild(s); });
-        card.appendChild(tagsWrap);
-
-        const actionsWrap = document.createElement("div"); actionsWrap.className = "pm-card-actions";
         
-        // 核心修复：精准提取带有时间戳的一级分类ID用于判断高亮状态
+        let cardClasses = "pm-card pm-selectable-card";
+        if (STATE.isBatchMode && isSelectedInBatch) cardClasses += " batch-selected";
+        else if (!STATE.isBatchMode && isInWidget) cardClasses += " in-prompt";
+
+        // 查找所属的一级模型用于判断收藏状态
         let mIdForCard = null;
         if (STATE.localDB.models && STATE.localDB.models.main_models) {
             for (const key of Object.keys(STATE.localDB.models.main_models)) {
@@ -1220,38 +1157,155 @@ function renderGrid() {
             }
         }
         if (!mIdForCard) mIdForCard = STATE.currentModelId || ctx.split('_')[0];
-        
         const globalCtxForCard = `${mIdForCard}_global`;
         const inGrp = STATE.localDB.contexts[globalCtxForCard]?.groups?.some(g => g.items.includes(item));
-        const favBtn = document.createElement("button"); favBtn.className = `pm-text-btn ${inGrp ? 'warning' : ''}`; favBtn.innerText = inGrp ? "已收藏" : "收藏";
-        favBtn.onclick = (e) => { e.stopPropagation(); window.PM_Global.ui.openGroupSelectModal(item, ctx); }; actionsWrap.appendChild(favBtn);
 
-        const appendBtn = document.createElement("button"); appendBtn.className = "pm-text-btn"; appendBtn.innerText = "上传";
-        appendBtn.onclick = (e) => { e.stopPropagation(); STATE.currentAppendTarget = { item, ctx }; document.getElementById("pm-hidden-append-img").click(); }; actionsWrap.appendChild(appendBtn);
-
-        const editBtn = document.createElement("button"); editBtn.className = "pm-text-btn"; editBtn.innerText = "编辑";
-        editBtn.onclick = (e) => { e.stopPropagation(); window.openEditCardModal(item, ctx); }; actionsWrap.appendChild(editBtn);
-
-        const delCardBtn = document.createElement("button"); delCardBtn.className = "pm-text-btn danger"; delCardBtn.innerText = "删除";
-        delCardBtn.onclick = async (e) => { e.stopPropagation(); if (confirm(`彻底删除 [ ${item} ]？`)) await deleteCardDirect(item, ctx); }; actionsWrap.appendChild(delCardBtn);
-
-        card.appendChild(actionsWrap);
-        card.onclick = () => {
-            if (STATE.isBatchMode) {
-                if (window._isDraggingMarquee) return;
-                const batchKey = `${ctx}||${item}`;
-                if (STATE.batchSelection.has(batchKey)) STATE.batchSelection.delete(batchKey); else STATE.batchSelection.add(batchKey);
-                document.getElementById("pm-batch-count").innerText = `已选择: ${STATE.batchSelection.size}`; renderGrid();
-            } else {
-                if (!STATE.currentActiveWidget) return;
-                let p = UTILS.parsePromptText(STATE.currentActiveWidget.value);
-                const idx = p.findIndex(x => x.tag === item);
-                if (idx !== -1) p.splice(idx, 1); else p.push({ original: item, tag: item, weight: 1.0, enabled: true });
-                STATE.currentActiveWidget.value = UTILS.buildPromptText(p); app.graph.setDirtyCanvas(true); renderGrid();
+        // 1. 构建图片区域 HTML
+        let imgWrapHtml = '';
+        if (imgList.length > 0) {
+            const firstImg = imgList[0];
+            imgWrapHtml = `
+                <img src="${firstImg}" loading="lazy" class="pm-action-target" data-action="view-img" style="cursor:zoom-in;">
+                <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
+            `;
+            if (imgList.length > 1) {
+                imgWrapHtml += `
+                    <button class="pm-nav-arrow left pm-action-target" data-action="prev-img">◀</button>
+                    <button class="pm-nav-arrow right pm-action-target" data-action="next-img">▶</button>
+                `;
             }
-        };
-        main.appendChild(card);
+        } else {
+            imgWrapHtml = `<div class="pm-no-img">无图 (点上传)</div>`;
+        }
+
+        // 2. 构建标签区域 HTML
+        const tags = STATE.localDB.contexts[ctx]?.metadata?.[item]?.tags || [];
+        let tagsHtml = tags.length === 0 
+            ? '<span style="color:#555; font-style:italic;">暂无标签</span>'
+            : tags.map(t => `<span class="pm-tag">${t}</span>`).join('');
+
+        // 3. 构建来源显示 HTML
+        let sourceHtml = '';
+        if (STATE.searchScope !== "mode") {
+            const prefix = STATE.currentModelId + "_";
+            const modId = ctx.startsWith(prefix) ? ctx.substring(prefix.length) : ctx.split('_').slice(1).join('_');
+            const mName = STATE.localDB.models.main_models[STATE.currentModelId]?.modes[modId]?.name || modId;
+            sourceHtml = `<div class="pm-card-source">[${mName}]</div>`;
+        }
+
+        // 注入安全字符转义，防止名字中有双引号破坏 HTML 结构
+        const safeItem = encodeURIComponent(item);
+        // HTML 实体转义，防止带有 < > ' " 的 Prompt 破坏 DOM 导致后续操作失效
+        const escapeHTML = (str) => str.replace(/[&<>'"]/g, 
+            tag => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'}[tag] || tag));
+
+        htmlChunks.push(`
+            <div class="${cardClasses}" data-ctx="${ctx}" data-item="${safeItem}">
+                <div class="pm-card-img-wrap" data-img-idx="0">${imgWrapHtml}</div>
+                <div class="pm-card-title">${escapeHTML(item)}</div>
+                ${sourceHtml}
+                <div class="pm-card-tags">${tagsHtml}</div>
+                <div class="pm-card-actions">
+                    <button class="pm-text-btn pm-action-target ${inGrp ? 'warning' : ''}" data-action="fav">${inGrp ? "已收藏" : "收藏"}</button>
+                    <button class="pm-text-btn pm-action-target" data-action="upload">上传</button>
+                    <button class="pm-text-btn pm-action-target" data-action="edit">编辑</button>
+                    <button class="pm-text-btn danger pm-action-target" data-action="delete">删除</button>
+                </div>
+            </div>
+        `);
     });
+
+    // 一次性渲染到页面中 (避免无数次重排回流)
+    main.innerHTML = htmlChunks.join('');
+    
+    // [核心优化]：绑定唯一的事件委托监听器 (代替原来每个卡片绑定 5 个 onClick 的灾难设计)
+    if (!main.dataset.delegated) {
+        main.dataset.delegated = "true";
+        main.addEventListener('click', handleGridClick);
+    }
+}
+
+/* =====================================================================
+ * 辅助模块：事件委托中心 (捕获网格区的所有点击事件)
+ * ===================================================================== */
+async function handleGridClick(e) {
+    // 1. 如果点击的是卡片内的某个功能按钮/图片
+    const actionTarget = e.target.closest('.pm-action-target');
+    if (actionTarget) {
+        e.stopPropagation();
+        const action = actionTarget.dataset.action;
+        const card = actionTarget.closest('.pm-selectable-card');
+        if (!card) return;
+
+        const ctx = card.dataset.ctx;
+        const item = decodeURIComponent(card.dataset.item);
+        const imgKey = `${ctx}_${item}`;
+        const imgList = STATE.localDB.images?.[imgKey] || [];
+        const imgWrap = card.querySelector('.pm-card-img-wrap');
+        let currentImgIdx = imgWrap ? parseInt(imgWrap.dataset.imgIdx || "0") : 0;
+
+        if (action === 'view-img' && !STATE.isBatchMode) {
+            document.getElementById('pm-viewer-img').src = imgList[currentImgIdx];
+            window.pmShowModal("pm-image-viewer");
+        } else if (action === 'del-img') {
+            if (confirm("仅彻底删除当前显示的这张图片？")) {
+                await PromptAPI.deleteFile(imgList[currentImgIdx]); 
+                imgList.splice(currentImgIdx, 1);
+                STATE.localDB.images[imgKey] = imgList; 
+                await PromptAPI.saveDB(STATE.localDB); 
+                renderGrid();
+            }
+        } else if (action === 'prev-img' || action === 'next-img') {
+            currentImgIdx = action === 'prev-img' 
+                ? (currentImgIdx - 1 + imgList.length) % imgList.length 
+                : (currentImgIdx + 1) % imgList.length;
+            imgWrap.dataset.imgIdx = currentImgIdx;
+            imgWrap.querySelector('img').src = imgList[currentImgIdx];
+        } else if (action === 'fav') {
+            window.PM_Global.ui.openGroupSelectModal(item, ctx);
+        } else if (action === 'upload') {
+            STATE.currentAppendTarget = { item, ctx }; 
+            document.getElementById("pm-hidden-append-img").click();
+        } else if (action === 'edit') {
+            window.openEditCardModal(item, ctx);
+        } else if (action === 'delete') {
+            if (confirm(`彻底删除 [ ${item} ]？`)) await deleteCardDirect(item, ctx);
+        }
+        return; // 处理完按钮事件后退出，不再触发外层卡片逻辑
+    }
+
+    // 2. 如果点击的是卡片本体空白区域 (添加词条 / 批量选中)
+    const card = e.target.closest('.pm-selectable-card');
+    if (card) {
+        const ctx = card.dataset.ctx;
+        const item = decodeURIComponent(card.dataset.item);
+        
+        if (STATE.isBatchMode) {
+            if (window._isDraggingMarquee) return;
+            const batchKey = `${ctx}||${item}`;
+            if (STATE.batchSelection.has(batchKey)) {
+                STATE.batchSelection.delete(batchKey);
+                card.classList.remove("batch-selected");
+            } else {
+                STATE.batchSelection.add(batchKey);
+                card.classList.add("batch-selected");
+            }
+            document.getElementById("pm-batch-count").innerText = `已选择: ${STATE.batchSelection.size}`;
+        } else {
+            if (!STATE.currentActiveWidget) return;
+            let p = UTILS.parsePromptText(STATE.currentActiveWidget.value);
+            const idx = p.findIndex(x => x.tag === item);
+            if (idx !== -1) {
+                p.splice(idx, 1);
+                card.classList.remove("in-prompt");
+            } else {
+                p.push({ original: item, tag: item, weight: 1.0, enabled: true });
+                card.classList.add("in-prompt");
+            }
+            STATE.currentActiveWidget.value = UTILS.buildPromptText(p); 
+            app.graph.setDirtyCanvas(true);
+        }
+    }
 }
 
 // === 4. 数据操作与逻辑 ===
@@ -1414,7 +1468,10 @@ function setupMarquee() {
         main.querySelectorAll(".pm-selectable-card").forEach(card => {
             const cardRect = { left: card.offsetLeft, top: card.offsetTop, right: card.offsetLeft + card.offsetWidth, bottom: card.offsetTop + card.offsetHeight };
             const isIntersecting = !(marqueeRect.right < cardRect.left || marqueeRect.left > cardRect.right || marqueeRect.bottom < cardRect.top || marqueeRect.top > cardRect.bottom);
-            const batchKey = `${card.dataset.ctx}||${card.dataset.item}`;
+            // 修复 Bug 1：框选时强制解码，杜绝 %20 乱码写入数据库
+            const decodedItem = decodeURIComponent(card.dataset.item);
+            const batchKey = `${card.dataset.ctx}||${decodedItem}`;
+            
             if (isIntersecting ? !selectionSnapshot.has(batchKey) : selectionSnapshot.has(batchKey)) { STATE.batchSelection.add(batchKey); card.classList.add("batch-selected"); } 
             else { STATE.batchSelection.delete(batchKey); card.classList.remove("batch-selected"); }
         });
