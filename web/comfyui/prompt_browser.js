@@ -1090,13 +1090,25 @@ function renderModelTabs() {
 
     const models = STATE.localDB.models.main_models;
     
-    // === 核心改造：将本地模型和在线模型分开 (并彻底隐藏后端的专属收藏容器) ===
+    // === 核心改造：将本地模型和在线模型分开 (并处理云端数据丢失后的遗产打捞) ===
     const localModels = [];
     const cloudModels = [];
     
     for (const [mId, mData] of Object.entries(models)) {
-        if (mId.startsWith('cloud_')) cloudModels.push({ id: mId, data: mData });
-        else if (!mId.startsWith('fav_cloud_')) localModels.push({ id: mId, data: mData }); // 拦截隐形容器
+        if (mId.startsWith('cloud_')) {
+            cloudModels.push({ id: mId, data: mData });
+        } else if (mId.startsWith('fav_cloud_')) {
+            // 核心修复：检查它是不是孤儿（原云端库已被开发者删除或改名）
+            const originalCloudId = mId.replace('fav_', '');
+            if (!models[originalCloudId]) {
+                // 这是一个被开发者抛弃的遗留订阅库！将其临时转正为本地库，让用户可以抢救或清理遗产
+                let orphanData = JSON.parse(JSON.stringify(mData));
+                orphanData.name = orphanData.name.replace('订阅库-', '⚠️[已失效] ');
+                localModels.push({ id: mId, data: orphanData });
+            }
+        } else {
+            localModels.push({ id: mId, data: mData });
+        }
     }
 
     if (Object.keys(models).length === 0) {
