@@ -700,7 +700,8 @@ app.registerExtension({
                     
                     if (!currentGroupWidget || !countWidget || currentGroupWidget.value === "无可用分组_请先创建") return alert("请先创建收藏分组并选择！");
                     
-                    const parts = currentGroupWidget.value.match(/^\[(.*?)\]\s*(.*)$/);
+                    // 修复：同步将 .*? 改为 .* 贪婪匹配，防止用户模型名字自带括号导致切片失败
+                    const parts = currentGroupWidget.value.match(/^\[(.*)\]\s*(.*)$/);
                     if (!parts) return alert("分组格式无法识别！请尝试重新下拉选择该分组刷新数据。");
                     
                     const m_name = parts[1];

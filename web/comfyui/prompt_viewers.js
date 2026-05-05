@@ -242,13 +242,14 @@ app.registerExtension({
                         let imgUrl = null;
                         if (currentComboName && currentComboName !== "无可用组合_请先创建") {
                             if (STATE.localDB.contexts && STATE.localDB.models?.main_models) {
-                                const parts = currentComboName.match(/^\[(.*?)\]\s*(.*)$/);
+                                // 修复：将 .*? 改为贪婪匹配 .*，完美兼容名称内部带有方括号的情况
+                                const parts = currentComboName.match(/^\[(.*)\]\s*(.*)$/);
                                 if (parts) {
-                                    const m_name = parts[1];
-                                    const c_name = parts[2];
+                                    const m_name = parts[1].trim();
+                                    const c_name = parts[2].trim();
                                     for (const [mId, mData] of Object.entries(STATE.localDB.models.main_models)) {
-                                        let checkName = (mData.name || mId).replace(/\[☁️在线\]\s*/, '').replace(/订阅库-\s*/, '');
-                                        if (checkName === m_name) {
+                                        // 修复：直接精确比对完整名称，无需再做前缀裁剪
+                                        if ((mData.name || mId) === m_name) {
                                             const combo = STATE.localDB.contexts[`${mId}_global`]?.combos?.find(c => c.name === c_name);
                                             if (combo && combo.image) { imgUrl = combo.image; break; }
                                         }
