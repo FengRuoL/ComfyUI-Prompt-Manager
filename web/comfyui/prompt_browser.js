@@ -29,7 +29,8 @@ window.switchCreateTab = function(tab) {
 };
 
 window.createSinglePrompt = async function() {
-    const val = document.getElementById("pm-create-single-input").value.trim();
+    let val = document.getElementById("pm-create-single-input").value.trim();
+    val = window.PM_Global.utils.normalizePromptName(val);
     if (!val) return alert("请输入提示词内容！");
     const ctx = `${STATE.currentModelId}_${STATE.currentModeId}`;
     if (!STATE.localDB.contexts[ctx]) STATE.localDB.contexts[ctx] = { items: [], metadata: {} };
@@ -43,7 +44,8 @@ window.createSinglePrompt = async function() {
 window.executeEditCard = async function() {
     if (!STATE.currentEditCardTarget) return;
     const { item, ctx } = STATE.currentEditCardTarget;
-    const newVal = document.getElementById("pm-edit-card-input").value.trim();
+    let newVal = document.getElementById("pm-edit-card-input").value.trim();
+    newVal = window.PM_Global.utils.normalizePromptName(newVal);
     const tagsStr = document.getElementById("pm-edit-card-tags").value.trim();
     const newTags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(t => t) : [];
     
@@ -69,22 +71,29 @@ window.executeEditCard = async function() {
     } catch (e) { alert("修改失败！"); } finally { UI.hideProgress(); }
 };
 
-window.PM_Global.ui.openGroupSelectModal = function(item, ctx) {
-    // 核心修复：精准提取带有时间戳的完整一级分类ID
-    let mId = null;
-    if (STATE.localDB.models && STATE.localDB.models.main_models) {
+window.PM_Global.ui.openGroupSelectModal = async function(item, ctx) { // 注意这里加了 async
+    // === 核心改造：精确匹配所属一级分类 ===
+    let sourceModelId = ctx.split('_')[0];
+    for (const key of Object.keys(STATE.localDB.models.main_models)) {
+        if (ctx.startsWith(key + '_')) { sourceModelId = key; break; }
+    }
+    
+    let targetModelId = await window.PM_Global.utils.getLocalTwinModelId(sourceModelId);
+    
+    if (!targetModelId) {
         for (const key of Object.keys(STATE.localDB.models.main_models)) {
-            if (ctx.startsWith(key + '_')) { mId = key; break; }
+            if (!key.startsWith('cloud_') && !key.startsWith('fav_cloud_')) { targetModelId = key; break; }
         }
     }
-    if (!mId) mId = STATE.currentModelId || ctx.split('_')[0]; // 兜底
     
-    const globalCtx = `${mId}_global`;
+    const globalCtx = `${targetModelId}_global`;
     if (!STATE.localDB.contexts[globalCtx]) STATE.localDB.contexts[globalCtx] = { items: [], metadata: {}, groups: [], combos: [] };
     const d = STATE.localDB.contexts[globalCtx];
     if(!d.groups) d.groups = [];
     
+    // 下面的 UI 渲染代码保持不变...
     let modal = document.getElementById("pm-group-select-modal");
+// ... 保持原有代码直到函数结束
     if (!modal) {
         modal = document.createElement("div"); modal.id = "pm-group-select-modal"; modal.className = "pm-modal-overlay";
         modal.innerHTML = `
@@ -107,10 +116,13 @@ window.PM_Global.ui.openGroupSelectModal = function(item, ctx) {
     d.groups.forEach((g, idx) => {
         const has = g.items.includes(item);
         const div = document.createElement("div"); div.className = "pm-list-item";
+        // 核心保护：对 item 进行 URL 编码，避免单引号切断 onclick
+        const safeItemForEvent = encodeURIComponent(item);
+        const safeGroupName = g.name.replace(/</g, '&lt;').replace(/>/g, '&gt;');
         div.innerHTML = `
             <label style="cursor:pointer; display:flex; align-items:center; gap:10px;">
-                <input type="checkbox" ${has?'checked':''} onchange="PM_Global.ui.toggleGroupItem(${idx}, '${item}', '${globalCtx}', this.checked)">
-                <span style="color:#ccc; font-weight:bold;">${g.name}</span>
+                <input type="checkbox" ${has?'checked':''} onchange="PM_Global.ui.toggleGroupItem(${idx}, decodeURIComponent('${safeItemForEvent}'), '${globalCtx}', this.checked)">
+                <span style="color:#ccc; font-weight:bold;">${safeGroupName}</span>
             </label>
             <span style="color:#666; font-size:12px;">${g.items.length} 项</span>
         `;
@@ -357,8 +369,13 @@ window.PM_Global.ui.executeExport = async function() {
 
     if (scope === "all") {
         exportData.models = JSON.parse(JSON.stringify(STATE.localDB.models));
+        // 核心修复：导出时强制剥离云端订阅库，防止污染本地备份
+        for (let mId in exportData.models.main_models) {
+            if (mId.startsWith('cloud_')) delete exportData.models.main_models[mId];
+        }
         exportData.settings = STATE.localDB.settings;
-        targetCtxs = Object.keys(STATE.localDB.contexts || {}); 
+        // 核心修复：不导出云端的上下文
+        targetCtxs = Object.keys(STATE.localDB.contexts || {}).filter(ctx => !ctx.startsWith('cloud_')); 
     } else {
         exportData.settings = STATE.localDB.settings; 
         
@@ -487,6 +504,46 @@ function openNativeBrowser() {
             link.href = new URL("./prompt_manager.css", import.meta.url).href;
             document.head.appendChild(link);
         }
+
+        // 动态注入云端只读模式的隐藏样式
+        if (!document.getElementById("pm-cloud-style")) {
+            const cloudStyle = document.createElement("style");
+            cloudStyle.id = "pm-cloud-style";
+            cloudStyle.innerHTML = `
+                /* 1. 隐藏所有破坏数据的按钮（新增隐藏图片上的删除小叉号） */
+                .is-cloud-mode .pm-ctrl-group, 
+                .is-cloud-mode .pm-add-btn, 
+                .is-cloud-mode [data-action="upload"], 
+                .is-cloud-mode [data-action="edit"], 
+                .is-cloud-mode [data-action="delete"], 
+                .is-cloud-mode .pm-del-img-btn, 
+                .is-cloud-mode #pm-btn-add-card, 
+                .is-cloud-mode #pm-btn-batch { 
+                    display: none !important; 
+                }
+                
+                /* 1.1 新增：控制专属更新按钮的显示与隐藏 */
+                #sect-cloud-ops { display: none; }
+                .is-cloud-mode #sect-cloud-ops { display: block; margin-top: 15px; border-top: 1px dashed rgba(255,107,157,0.3); padding-top: 15px; }
+                
+                /* 2. 禁止侧边栏分类的拖拽行为 */
+                .is-cloud-mode .pm-cat-wrap,
+                .is-cloud-mode .pm-mode-wrap { pointer-events: none; } 
+                
+                /* 3. 释放分类按钮的点击事件，否则无法切换三级分类 */
+                .is-cloud-mode .pm-cat-header,
+                .is-cloud-mode .pm-mode-btn { pointer-events: auto; }
+
+                /* 4. 隐藏侧边栏的本地管理专属功能 */
+                .is-cloud-mode #sect-backup,
+                .is-cloud-mode #sect-settings,
+                .is-cloud-mode .pm-sidebar-group:nth-child(2),
+                .is-cloud-mode .pm-sidebar-group:nth-child(3) { 
+                    display: none !important; 
+                }
+            `;
+            document.head.appendChild(cloudStyle); // <-- 修复1：加上了这一行挂载到页面
+        } // <-- 修复2：加上了这个极其关键的右大括号！
 
         // 2. 独立构建所有隐藏的弹窗模态框 (解耦分离)
         buildAllModals();
@@ -721,6 +778,14 @@ function buildMainContainer() {
                             <input type="range" id="pm-width-slider" min="100" max="4096" step="10" value="${initMaxWidth}" style="width:100%; cursor:pointer;">
                         </div>
                     </div>
+                    
+                    <!-- 新增：订阅库专属的更新操作区 -->
+                    <div id="sect-cloud-ops">
+                        <div class="pm-sidebar-label">订阅库操作</div>
+                        <button class="pm-action-btn primary" style="width:100%; font-weight:bold; border-color:#ff6b9d;" onclick="PM_Global.ui.forceUpdateCloud()">强制拉取最新云端库</button>
+                        <p style="font-size:10px; color:#888; margin-top:8px; line-height:1.4;">提示：这会无视缓存立即下载最新数据，请勿频繁恶意点击以免被 GitHub 官方风控拉黑。</p>
+                    </div>
+
                     <input type="file" id="pm-hidden-import" accept=".json" style="display:none;">
                     <input type="file" id="pm-hidden-append-img" multiple accept="image/*" style="display:none;">
                 </div>
@@ -877,6 +942,81 @@ window.exitBatchMode = function() {
     renderGrid();
 };
 
+// === 新增：强制突破缓存的独立云端更新逻辑 (已适配新型分包架构) ===
+window.PM_Global.ui.forceUpdateCloud = async function() {
+    if (!confirm("确定要强制连接并更新订阅库吗？\n（若网络较差可能需要几秒钟时间，期间请勿操作）")) return;
+    UI.updateProgress("正在连接云端...", "穿透缓存获取最新数据，请耐心等待");
+    
+    try {
+        const CLOUD_BASE_URL = "https://fengruol.github.io/ComfyUI-Prompt-CloudDB";
+        const t = Date.now(); // 用时间戳强行穿透 GitHub Pages 缓存
+        
+        // 1. 获取基础架构 system.json
+        const sysRes = await fetch(`${CLOUD_BASE_URL}/data/system.json?t=${t}`);
+        if (!sysRes.ok) throw new Error("无法连接到云端 system.json");
+        const sysText = await sysRes.text();
+        const sysJson = JSON.parse(sysText.replace(/\/prompt_data\//g, `${CLOUD_BASE_URL}/data/`));
+        
+        let cloudModels = sysJson.models || { main_models: {} };
+        let cloudContexts = {};
+        let cloudImages = {};
+
+        // 2. 收集需要拉取的分包
+        let ctxFilesToFetch = [];
+        for (let mId in cloudModels.main_models) {
+            let mData = cloudModels.main_models[mId];
+            if (mData.modes) {
+                for (let modId in mData.modes) {
+                    ctxFilesToFetch.push(`${mId}_${modId}`);
+                }
+            }
+        }
+
+        // 3. 并发下载分包数据
+        const fetchCtx = async (ctxId) => {
+            try {
+                const res = await fetch(`${CLOUD_BASE_URL}/data/contexts_db/${ctxId}.json?t=${t}`);
+                if (res.ok) {
+                    const text = await res.text();
+                    return { id: ctxId, data: JSON.parse(text.replace(/\/prompt_data\//g, `${CLOUD_BASE_URL}/data/`)) };
+                }
+            } catch(err) {}
+            return null;
+        };
+
+        const ctxResults = await Promise.all(ctxFilesToFetch.map(id => fetchCtx(id)));
+        ctxResults.forEach(result => {
+            if (result && result.data) {
+                if (result.data.context) cloudContexts[result.id] = result.data.context;
+                if (result.data.images) Object.assign(cloudImages, result.data.images);
+            }
+        });
+
+        // 4. 无情清理旧的云端数据残留
+        for (let mId in STATE.localDB.models.main_models) { if (mId.startsWith('cloud_')) delete STATE.localDB.models.main_models[mId]; }
+        for (let ctx in STATE.localDB.contexts) { if (ctx.startsWith('cloud_')) delete STATE.localDB.contexts[ctx]; }
+        for (let imgKey in STATE.localDB.images) { if (imgKey.startsWith('cloud_')) delete STATE.localDB.images[imgKey]; }
+        
+        // 5. 重新注入新鲜拉取的云端数据
+        for (let mId in cloudModels.main_models) {
+            let cloudModelId = `cloud_${mId}`;
+            let mData = cloudModels.main_models[mId];
+            mData.name = `[☁️在线] ${mData.name}`;
+            mData.isCloud = true;
+            STATE.localDB.models.main_models[cloudModelId] = mData;
+        }
+        for (let ctx in cloudContexts) { STATE.localDB.contexts[`cloud_${ctx}`] = cloudContexts[ctx]; }
+        for (let imgKey in cloudImages) { STATE.localDB.images[`cloud_${imgKey}`] = cloudImages[imgKey]; }
+        
+        UI.hideProgress();
+        alert("云端数据强制更新成功！");
+        renderModelTabs(); // 立刻刷新左侧栏与页面
+    } catch (e) {
+        UI.hideProgress();
+        alert("更新失败，请检查网络设置或稍后再试！\n报错信息：" + e.message);
+    }
+};
+
 window.toggleSelectAll = function() {
     const main = document.getElementById("pm-main");
     const cards = main.querySelectorAll(".pm-selectable-card");
@@ -944,48 +1084,116 @@ function setupShortcuts() {
 function renderModelTabs() {
     const tabsContainer = document.getElementById("pm-tabs"); tabsContainer.innerHTML = '';
     
-    // === 新增安全校验：彻底防止空数据导致的崩溃 ===
     if (!STATE.localDB) STATE.localDB = {};
     if (!STATE.localDB.models) STATE.localDB.models = { main_models: {} };
     if (!STATE.localDB.models.main_models) STATE.localDB.models.main_models = {};
-    if (!STATE.localDB.contexts) STATE.localDB.contexts = {};
-    if (!STATE.localDB.images) STATE.localDB.images = {};
-    // ===========================================
 
     const models = STATE.localDB.models.main_models;
-    if (Object.keys(models).length === 0) {
-        tabsContainer.innerHTML = '<span style="color:#666; padding:12px; font-size:12px;">没有任何一级分类</span>';
-    } else {
-        if (!STATE.currentModelId || !models[STATE.currentModelId]) STATE.currentModelId = Object.keys(models)[0];
-        for (const [mId, mData] of Object.entries(models)) {
-            const wrap = document.createElement("div"); wrap.className = `pm-tab-wrap ${mId === STATE.currentModelId ? 'active' : ''}`;
-            wrap.draggable = true;
-            wrap.ondragstart = (e) => { e.dataTransfer.setData("text/plain", "model_"+mId); e.stopPropagation(); };
-            wrap.ondragover = (e) => { e.preventDefault(); wrap.classList.add('pm-drag-over-tab'); };
-            wrap.ondragleave = () => { wrap.classList.remove('pm-drag-over-tab'); };
-            wrap.ondrop = async (e) => {
-                e.preventDefault(); e.stopPropagation(); wrap.classList.remove('pm-drag-over-tab');
-                const type_id = e.dataTransfer.getData("text/plain");
-                if (type_id.startsWith("model_")) {
-                    const srcId = type_id.replace("model_", "");
-                    STATE.localDB.models.main_models = UTILS.reorderObjectKeys(STATE.localDB.models.main_models, srcId, mId);
-                    await PromptAPI.saveDB(STATE.localDB); renderModelTabs(); UTILS.syncImportNodeWidgets();
-                }
-            };
+    
+    // === 核心改造：将本地模型和在线模型分开 (并彻底隐藏后端的专属收藏容器) ===
+    const localModels = [];
+    const cloudModels = [];
+    
+    for (const [mId, mData] of Object.entries(models)) {
+        if (mId.startsWith('cloud_')) cloudModels.push({ id: mId, data: mData });
+        else if (!mId.startsWith('fav_cloud_')) localModels.push({ id: mId, data: mData }); // 拦截隐形容器
+    }
 
-            const btn = document.createElement("button"); btn.className = "pm-tab-btn"; btn.innerText = mData.name || mId;
-            btn.onclick = () => { STATE.currentModelId = mId; STATE.currentModeId = null; renderModelTabs(); };
-            
-            const ctrlGroup = document.createElement("div"); ctrlGroup.className = "pm-ctrl-group";
-            const editBtn = document.createElement("button"); editBtn.className = "pm-ctrl-btn"; editBtn.innerText = "设置"; editBtn.onclick = (e) => { e.stopPropagation(); editModel(mId); };
-            const delBtn = document.createElement("button"); delBtn.className = "pm-ctrl-btn del"; delBtn.innerText = "删除"; delBtn.onclick = (e) => { e.stopPropagation(); deleteModel(mId); };
-            ctrlGroup.appendChild(editBtn); ctrlGroup.appendChild(delBtn);
-            wrap.appendChild(btn); wrap.appendChild(ctrlGroup); tabsContainer.appendChild(wrap);
+    if (Object.keys(models).length === 0) {
+        tabsContainer.innerHTML = '<span style="color:#666; padding:12px; font-size:12px;">没有任何分类</span>';
+    } else {
+        if (!STATE.currentModelId || !models[STATE.currentModelId]) {
+            STATE.currentModelId = localModels.length > 0 ? localModels[0].id : (cloudModels.length > 0 ? cloudModels[0].id : null);
+        }
+
+        // 渲染本地库
+        if (localModels.length > 0) {
+            const localLabel = document.createElement("span");
+            localLabel.style.cssText = "color:#aaa; font-size:12px; margin-right:5px; align-self:center;";
+            localLabel.innerText = "💻 本地库:";
+            tabsContainer.appendChild(localLabel);
+
+            localModels.forEach(m => createTabElement(m.id, m.data, tabsContainer, true));
+        }
+
+        // 添加新建本地一级分类按钮
+        const addBtn = document.createElement("button"); 
+        addBtn.className = "pm-ctrl-btn"; 
+        addBtn.style.display = "block"; addBtn.style.marginLeft = "5px"; addBtn.innerText = "+ 新建";
+        addBtn.onclick = () => addModel(); 
+        tabsContainer.appendChild(addBtn);
+
+        // 渲染分隔符和云端库
+        if (cloudModels.length > 0) {
+            const divider = document.createElement("div");
+            divider.style.cssText = "width:2px; height:20px; background:#444; margin: 0 15px; align-self:center;";
+            tabsContainer.appendChild(divider);
+
+            const cloudLabel = document.createElement("span");
+            cloudLabel.style.cssText = "color:#ff6b9d; font-size:12px; margin-right:5px; align-self:center;";
+            cloudLabel.innerText = "☁️ 订阅库:";
+            tabsContainer.appendChild(cloudLabel);
+
+            cloudModels.forEach(m => createTabElement(m.id, m.data, tabsContainer, false));
         }
     }
-    const addBtn = document.createElement("button"); addBtn.className = "pm-ctrl-btn"; addBtn.style.display = "block"; addBtn.style.marginLeft = "10px"; addBtn.innerText = "新建一级分类";
-    addBtn.onclick = () => addModel(); tabsContainer.appendChild(addBtn);
+
+    // === UI 净化逻辑 ===
+    const container = document.getElementById("pm-native-modal");
+    if (container) {
+        if (STATE.currentModelId && STATE.currentModelId.startsWith("cloud_")) {
+            container.classList.add("is-cloud-mode");
+            // 云端模式下，禁止拖拽分类
+            container.classList.add("disable-drag");
+        } else {
+            container.classList.remove("is-cloud-mode");
+            container.classList.remove("disable-drag");
+        }
+    }
+    
     renderSidebar();
+}
+
+// 辅助函数：创建单个 Tab 元素
+function createTabElement(mId, mData, tabsContainer, isLocal) {
+    const wrap = document.createElement("div"); 
+    wrap.className = `pm-tab-wrap ${mId === STATE.currentModelId ? 'active' : ''}`;
+    
+    // 只有本地分类允许拖拽排序
+    if (isLocal) {
+        wrap.draggable = true;
+        wrap.ondragstart = (e) => { e.dataTransfer.setData("text/plain", "model_"+mId); e.stopPropagation(); };
+        wrap.ondragover = (e) => { e.preventDefault(); wrap.classList.add('pm-drag-over-tab'); };
+        wrap.ondragleave = () => { wrap.classList.remove('pm-drag-over-tab'); };
+        wrap.ondrop = async (e) => {
+            e.preventDefault(); e.stopPropagation(); wrap.classList.remove('pm-drag-over-tab');
+            const type_id = e.dataTransfer.getData("text/plain");
+            if (type_id.startsWith("model_")) {
+                const srcId = type_id.replace("model_", "");
+                STATE.localDB.models.main_models = window.PM_Global.utils.reorderObjectKeys(STATE.localDB.models.main_models, srcId, mId);
+                await PromptAPI.saveDB(STATE.localDB); renderModelTabs(); window.PM_Global.utils.syncImportNodeWidgets();
+            }
+        };
+    }
+
+    const btn = document.createElement("button"); 
+    btn.className = "pm-tab-btn"; 
+    // 云端名字里已经自带了 [☁️在线]，所以直接用
+    btn.innerText = mData.name || mId;
+    btn.onclick = () => { STATE.currentModelId = mId; STATE.currentModeId = null; renderModelTabs(); };
+    
+    wrap.appendChild(btn);
+
+    // 只有本地分类才显示设置和删除按钮
+    if (isLocal) {
+        const ctrlGroup = document.createElement("div"); ctrlGroup.className = "pm-ctrl-group";
+        const editBtn = document.createElement("button"); editBtn.className = "pm-ctrl-btn"; editBtn.innerText = "设置"; editBtn.onclick = (e) => { e.stopPropagation(); editModel(mId); };
+        const delBtn = document.createElement("button"); delBtn.className = "pm-ctrl-btn del"; delBtn.innerText = "删除"; delBtn.onclick = (e) => { e.stopPropagation(); deleteModel(mId); };
+        ctrlGroup.appendChild(editBtn); ctrlGroup.appendChild(delBtn);
+        wrap.appendChild(ctrlGroup);
+    }
+    
+    tabsContainer.appendChild(wrap);
 }
 
 function renderSidebar() {
@@ -1149,16 +1357,23 @@ function renderGrid() {
         if (STATE.isBatchMode && isSelectedInBatch) cardClasses += " batch-selected";
         else if (!STATE.isBatchMode && isInWidget) cardClasses += " in-prompt";
 
-        // 查找所属的一级模型用于判断收藏状态
-        let mIdForCard = null;
-        if (STATE.localDB.models && STATE.localDB.models.main_models) {
-            for (const key of Object.keys(STATE.localDB.models.main_models)) {
-                if (ctx.startsWith(key + '_')) { mIdForCard = key; break; }
-            }
+        // 获取真实的 sourceModelId 判断收藏状态
+        let sourceModelId = ctx.split('_')[0];
+        for (const key of Object.keys(STATE.localDB.models.main_models)) {
+            if (ctx.startsWith(key + '_')) { sourceModelId = key; break; }
         }
-        if (!mIdForCard) mIdForCard = STATE.currentModelId || ctx.split('_')[0];
-        const globalCtxForCard = `${mIdForCard}_global`;
-        const inGrp = STATE.localDB.contexts[globalCtxForCard]?.groups?.some(g => g.items.includes(item));
+        
+        let localTargetModelId = null;
+        if (sourceModelId.startsWith('cloud_')) {
+            // 云端卡片直接去它的专属隐形收藏库找状态
+            localTargetModelId = "fav_" + sourceModelId;
+        } else {
+            // 本地卡片就用自己
+            localTargetModelId = sourceModelId;
+        }
+        
+        const globalCtxForCard = localTargetModelId ? `${localTargetModelId}_global` : null;
+        const inGrp = globalCtxForCard && STATE.localDB.contexts[globalCtxForCard]?.groups?.some(g => g.items.includes(item));
 
         // 1. 构建图片区域 HTML
         let imgWrapHtml = '';
@@ -1328,7 +1543,9 @@ async function handleBatchCreateImages(files) {
     if (!STATE.localDB.contexts[ctx]) STATE.localDB.contexts[ctx] = { items: [], metadata: {} };
     for (let i = 0; i < files.length; i++) {
         if (!files[i].type.match('image.*')) continue;
-        let promptName = files[i].name.replace(/\.[^/.]+$/, "").trim(); try { promptName = decodeURIComponent(promptName); } catch(e) {}
+        let promptName = files[i].name.replace(/\.[^/.]+$/, "").trim(); 
+        try { promptName = decodeURIComponent(promptName); } catch(e) {}
+        promptName = window.PM_Global.utils.normalizePromptName(promptName);
         if (!promptName) continue;
         let pct = Math.round(((i + 1) / files.length) * 100); UI.updateProgress("批量上传...", `处理中: ${i+1} / ${files.length}`, pct);
         if (!STATE.localDB.contexts[ctx].items.includes(promptName)) { STATE.localDB.contexts[ctx].items.push(promptName); STATE.localDB.contexts[ctx].metadata[promptName] = { tags: [] }; }
@@ -1350,6 +1567,7 @@ async function handleCreateTXT(file) {
         let addedCount = 0;
         e.target.result.split(/[,\r\n]+/).forEach(p => {
             let val = p.trim(); try { val = decodeURIComponent(val); } catch(e) {}
+            val = window.PM_Global.utils.normalizePromptName(val);
             if (val && !STATE.localDB.contexts[ctx].items.includes(val)) { STATE.localDB.contexts[ctx].items.push(val); STATE.localDB.contexts[ctx].metadata[val] = { tags: [] }; addedCount++; }
         });
         if (addedCount > 0) { await PromptAPI.saveDB(STATE.localDB); alert(`成功导入 ${addedCount} 个！`); } else alert("未发现新内容。");
@@ -1545,20 +1763,15 @@ app.registerExtension({
                 }
 
                 if (hasAutoRandom) {
-                    let count = number || 1; 
-                    let lastResult;
-                    for (let i = 0; i < count; i++) {
-                        const targetNodes = app.graph._nodes.filter(n => n.type === "PromptBrowserNode" || n.type === "PromptGroupRandomizerNode");
-                        for (const node of targetNodes) {
-                            const autoWidget = node.widgets?.find(w => w.name === "自动随机抽取");
-                            if (autoWidget && autoWidget.value) {
-                                const randomBtn = node.widgets?.find(w => w.name === "random" || w.name === "随机抽取" || w.name === "draw_blind_box" || w.name === "抽取盲盒");
-                                if (randomBtn && randomBtn.callback) await randomBtn.callback();
-                            }
+                    // 修复：仅抽取一次盲盒，不再强行拦截拆分批次队列
+                    const targetNodes = app.graph._nodes.filter(n => n.type === "PromptBrowserNode" || n.type === "PromptGroupRandomizerNode");
+                    for (const node of targetNodes) {
+                        const autoWidget = node.widgets?.find(w => w.name === "自动随机抽取");
+                        if (autoWidget && autoWidget.value) {
+                            const randomBtn = node.widgets?.find(w => w.name === "random" || w.name === "随机抽取" || w.name === "draw_blind_box" || w.name === "抽取盲盒");
+                            if (randomBtn && randomBtn.callback) await randomBtn.callback();
                         }
-                        lastResult = await origQueuePrompt.call(this, 1, batchCount);
                     }
-                    return lastResult;
                 }
             } catch (e) {
                 console.error("[PromptManager] 自动随机抽卡发生错误:", e);

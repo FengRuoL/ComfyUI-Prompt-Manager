@@ -54,12 +54,27 @@ Object.assign(window.PM_Global.utils, {
 
     parsePromptText(text) {
         if (!text) return [];
-        return text.split(',').map(s => s.trim()).filter(s => s).map(p => {
+        // 灵活修复：使用前瞻正则分割，仅在括号外部遇到逗号时才分割。
+        // 完美兼容: (tag1, tag2:1.2) 这种混合写法，不会把内部逗号切断
+        const parts = text.split(/,(?![^()]*\))/g);
+        
+        return parts.map(s => s.trim()).filter(s => s).map(p => {
             let tag = p, weight = 1.0;
+            // 继续使用你原本的宽松匹配逻辑，不强行剥离纯圆括号，给用户留足发挥空间
             const match = p.match(/^\((.+):([\d.]+)\)$/);
             if (match) { tag = match[1]; weight = parseFloat(match[2]); }
             return { original: p, tag, weight, enabled: true };
         });
+    },
+
+// 在 cyrb53 或 parsePromptText 的同级位置，加入：
+    normalizePromptName(name) {
+        if (!name) return name;
+        return name
+            .replace(/\\\(/g, '(')
+            .replace(/\\\)/g, ')')
+            .replace(/[\s_]*\(/g, '_(')
+            .trim();
     },
 
     buildPromptText(list) {
@@ -83,6 +98,21 @@ Object.assign(window.PM_Global.utils, {
     async getAndMigrateDB() {
         let db = await PromptAPI.getDB();
         let needSave = false;
+        
+        // === 修复：抹除隐形收藏容器名字中的方括号，防止节点正则解析崩溃 ===
+        if (db.models && db.models.main_models) {
+            for (const mId in db.models.main_models) {
+                if (mId.startsWith('fav_cloud_')) {
+                    const mName = db.models.main_models[mId].name;
+                    if (mName && mName.includes('[收藏]')) {
+                        // 将 "[收藏] Anima" 转换为 "订阅库-Anima"
+                        db.models.main_models[mId].name = mName.replace(/\[收藏\]\s*/g, '订阅库-');
+                        needSave = true;
+                    }
+                }
+            }
+        }
+
         if (db.contexts) {
             // 1. 旧版备注转标签逻辑
             for (const ctx in db.contexts) {
@@ -239,9 +269,15 @@ Object.assign(window.PM_Global.utils, {
         let choices = [];
         let modelChoices = [];
         const models = STATE.localDB.models?.main_models || {};
+        
         for (const [model_id, model_data] of Object.entries(models)) {
+            // 【修复3】：只拦截纯云端库，但放行本地隐形收藏库（fav_cloud_）
+            if (model_id.startsWith('cloud_')) continue;
+            
             const m_name = model_data.name || model_id;
             modelChoices.push(`[${m_name}]`); // 生成一级分类列表
+            
+            if (model_id.startsWith('fav_cloud_')) continue; // 隐形库没有三级分类，跳过后续构建
             
             const cats = {};
             (model_data.categories || []).forEach(c => cats[c.id] = c.name);
@@ -251,11 +287,14 @@ Object.assign(window.PM_Global.utils, {
                 choices.push(`[${m_name}] ${c_name} = ${md_name}`);
             }
         }
+        
         if (choices.length === 0) choices = ["未建任何模式_请先创建"];
         if (modelChoices.length === 0) modelChoices = ["未建任何分类_请先创建"];
 
         let comboChoices = [], groupChoices = [];
         for (const [model_id, model_data] of Object.entries(models)) {
+            if (model_id.startsWith('cloud_')) continue;
+            
             const m_name = model_data.name || model_id;
             const global_ctx = `${model_id}_global`;
             if (STATE.localDB.contexts && STATE.localDB.contexts[global_ctx]) {
@@ -271,12 +310,10 @@ Object.assign(window.PM_Global.utils, {
         const maxWidth = STATE.localDB.settings?.max_width ?? 900;
 
         app.graph._nodes.filter(n => n.type === "PromptImportNode").forEach(node => {
-            // 同步目标存储模式 (三级分类)
-            const widget = node.widgets?.find(w => w.name === "save_target" || w.name === "目标存储模式");
+            const widget = node.widgets?.find(w => w.name === "目标三级分类" || w.name === "save_target" || w.name === "目标存储模式");
             if (widget) { widget.options.values = choices; if (!choices.includes(widget.value)) widget.value = choices[0]; }
             
-            // 同步目标存储分类 (一级分类)
-            const catWidget = node.widgets?.find(w => w.name === "目标存储分类");
+            const catWidget = node.widgets?.find(w => w.name === "目标一级分类" || w.name === "目标存储分类");
             if (catWidget) { catWidget.options.values = modelChoices; if (!modelChoices.includes(catWidget.value)) catWidget.value = modelChoices[0]; }
             
             const compWidget = node.widgets?.find(w => w.name === "compress_rate" || w.name === "压缩率");
@@ -334,4 +371,26 @@ api.addEventListener("executed", async (e) => {
         if (n.type === "PromptViewerNode" && n.forceRefreshViewer) n.forceRefreshViewer();
     });
     window.PM_Global.utils.syncImportNodeWidgets();
+});
+
+// 新增功能补全：防止 500ms 防抖保存机制带来的 F5 刷新数据丢失漏洞
+window.addEventListener("beforeunload", () => {
+    if (PromptAPI.saveTimer && STATE.localDB) {
+        // 停止常规计时器
+        clearTimeout(PromptAPI.saveTimer);
+        
+        // 瞬间深拷贝并剥离云端数据
+        let dataToSave = JSON.parse(JSON.stringify(STATE.localDB));
+        for (let mId in dataToSave.models.main_models) { if (mId.startsWith('cloud_')) delete dataToSave.models.main_models[mId]; }
+        for (let ctx in dataToSave.contexts) { if (ctx.startsWith('cloud_')) delete dataToSave.contexts[ctx]; }
+        for (let imgKey in dataToSave.images) { if (imgKey.startsWith('cloud_')) delete dataToSave.images[imgKey]; }
+        
+        // 灵活修复：使用现代 fetch 并开启 keepalive，突破 64KB 限制，确保页面卸载后请求不中断
+        fetch('/api/prompt-manager/db', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(dataToSave),
+            keepalive: true
+        }).catch(err => console.warn("后台自动保存失败:", err));
+    }
 });

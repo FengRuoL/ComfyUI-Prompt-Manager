@@ -110,7 +110,6 @@ async function renderViewerCards(container, textValue, nodeInstance) {
     if (nodeInstance) app.graph.setDirtyCanvas(true);
 }
 
-// 注册: PromptViewerNode
 app.registerExtension({
     name: "PromptManager.ViewerNode",
     async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -118,43 +117,160 @@ app.registerExtension({
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 if (onNodeCreated) onNodeCreated.apply(this, arguments);
-                const container = document.createElement("div");
-                container.style.cssText = "width: 100%; min-width: 200px; min-height: 100px; height: 100%; overflow-y: auto; background: #151515; border-radius: 8px; padding: 10px; box-sizing: border-box; display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); grid-auto-rows: max-content; align-items: start; gap: 8px;";
                 
-                // 拦截鼠标滚轮和点击事件，防止穿透到底层 ComfyUI 画布导致误触缩放或拖拽
-                container.addEventListener("wheel", (e) => { e.stopPropagation(); }, { passive: false });
-                container.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+                // === 主容器布局 ===
+                const wrapper = document.createElement("div");
+                wrapper.style.cssText = "width: 100%; height: 100%; min-width: 200px; min-height: 100px; display: flex; flex-direction: column; background: #151515; border-radius: 8px; overflow: hidden; box-sizing: border-box;";
                 
-                this.addDOMWidget("viewer_grid", "HTML", container, { serialize: false, hideOnZoom: false });
+                wrapper.addEventListener("wheel", (e) => { e.stopPropagation(); }, { passive: false });
+                wrapper.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+
+                // B区：顶部大图区域 (默认隐藏)
+                const topImgContainer = document.createElement("div");
+                topImgContainer.style.cssText = "width: 100%; display: none; background: #0a0a0a; align-items: center; justify-content: center; flex-shrink: 0; position: relative;";
                 
-                this.viewerContainer = container;
+                const imgEl = document.createElement("img");
+                imgEl.style.cssText = "max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; display: none;";
+                
+                const imgPlaceholder = document.createElement("div");
+                imgPlaceholder.style.cssText = "color: #555; font-size: 12px; font-weight: bold;";
+                imgPlaceholder.innerText = "等待输入连接...";
+                
+                topImgContainer.appendChild(imgEl);
+                topImgContainer.appendChild(imgPlaceholder);
+
+                // 点击放大图片逻辑
+                imgEl.addEventListener("pointerup", (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    let viewer = document.getElementById("pm-standalone-viewer");
+                    if (!viewer) {
+                        viewer = document.createElement("div"); viewer.id = "pm-standalone-viewer";
+                        viewer.style.cssText = "position: fixed; top:0; left:0; width:100vw; height:100vh; background: rgba(0,0,0,0.85); z-index: 999999; display:none; flex-direction:column; align-items:center; justify-content:center; cursor: zoom-out;";
+                        viewer.innerHTML = `<img id="pm-standalone-img" src="" style="max-width: 90%; max-height: 90%; object-fit: contain; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.8);">`;
+                        document.body.appendChild(viewer);
+                        viewer.addEventListener("pointerup", (ve) => { ve.stopPropagation(); window.pmHideModal("pm-standalone-viewer"); });
+                    }
+                    const fullImgEl = document.getElementById("pm-standalone-img");
+                    if (fullImgEl) { fullImgEl.src = imgEl.src; window.pmShowModal("pm-standalone-viewer"); }
+                });
+
+                // A区：底部碎图网格区域
+                const gridContainer = document.createElement("div");
+                gridContainer.style.cssText = "flex: 1; width: 100%; overflow-y: auto; padding: 10px; box-sizing: border-box; display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); grid-auto-rows: max-content; align-items: start; gap: 8px;";
+                
+                wrapper.appendChild(topImgContainer);
+                wrapper.appendChild(gridContainer);
+                this.addDOMWidget("viewer_wrapper", "HTML", wrapper, { serialize: false, hideOnZoom: false });
+                
+                this.viewerContainer = gridContainer;
                 this.lastPrompt = null;
+                this.lastCombo = null;
+                this.isDestroyed = false; 
                 this.forceRefreshViewer = () => { this.lastPrompt = null; };
-                this.isDestroyed = false; // 标记生命周期
                 
                 const checkUpdate = async () => {
-                    if (this.isDestroyed) return; // 节点删除时彻底终止轮询
+                    if (this.isDestroyed) return; 
                     if (this.flags?.collapsed || !this.graph) { setTimeout(checkUpdate, 500); return; }
-                    let currentVal = "";
-                    const input = this.inputs?.find(inp => inp.name === "prompt_text" || inp.name === "prompt字符串");
-                    if (input && input.link) {
-                        const link = this.graph.links[input.link];
+                    
+                    // 获取当前连线状态
+                    const promptInput = this.inputs?.find(inp => inp.name === "prompt_text" || inp.name === "prompt字符串");
+                    const imgInput = this.inputs?.find(inp => inp.name === "组合预览图");
+                    
+                    const hasPromptLink = promptInput && promptInput.link != null;
+                    const hasImgLink = imgInput && imgInput.link != null;
+
+                    // === 核心逻辑：智能 UI 空间分配 ===
+                    if (hasImgLink && !hasPromptLink) {
+                        // 只连了图片(B区)：大图占满 100%，隐藏网格，自由拖拽放大
+                        topImgContainer.style.display = "flex";
+                        topImgContainer.style.height = "100%";
+                        topImgContainer.style.borderBottom = "none";
+                        gridContainer.style.display = "none";
+                    } else if (hasPromptLink && !hasImgLink) {
+                        // 只连了字符串(A区)：隐藏大图，网格占满 100%
+                        topImgContainer.style.display = "none";
+                        gridContainer.style.display = "grid";
+                    } else if (hasImgLink && hasPromptLink) {
+                        // 全连了(A区+B区)：上下 50% 均分，放大节点时两者同步变大
+                        topImgContainer.style.display = "flex";
+                        topImgContainer.style.height = "50%";
+                        topImgContainer.style.borderBottom = "1px dashed #444";
+                        gridContainer.style.display = "grid";
+                    } else {
+                        // 都没连：显示默认网格的“等待连接”状态
+                        topImgContainer.style.display = "none";
+                        gridContainer.style.display = "grid";
+                    }
+
+                    // === 任务A：追溯 Prompt 字符串并渲染碎图网格 ===
+                    let currentPromptVal = "";
+                    if (hasPromptLink) {
+                        const link = this.graph.links[promptInput.link];
                         if (link) {
                             const originNode = this.graph.getNodeById(link.origin_id);
                             if (originNode) {
-                                const pWidget = originNode.widgets?.find(w => w.name === "prompt_text" || w.name === "输入prompt");
-                                if (pWidget) currentVal = pWidget.value;
+                                const pWidget = originNode.widgets?.find(w => w.name === "prompt_text" || w.name === "输入prompt" || w.name === "combo_prompt");
+                                if (pWidget) currentPromptVal = pWidget.value;
                             }
                         }
                     }
-                    if (currentVal !== this.lastPrompt && currentVal !== null) {
-                        this.lastPrompt = currentVal;
-                        await renderViewerCards(this.viewerContainer, currentVal, this);
+                    // 有变化才重绘，保护性能
+                    if (currentPromptVal !== this.lastPrompt || (hasPromptLink === false && this.lastPrompt !== null)) {
+                        this.lastPrompt = hasPromptLink ? currentPromptVal : null;
+                        if (hasPromptLink) {
+                            await renderViewerCards(this.viewerContainer, currentPromptVal, this);
+                        } else {
+                            gridContainer.innerHTML = `<div style="grid-column: 1/-1; text-align: center; color: #555; font-size: 12px; padding: 20px;">等待输入连接...</div>`;
+                        }
                     }
-                    setTimeout(checkUpdate, 500);
+
+                    // === 任务B：追溯 组合大图 ===
+                    let currentComboName = null;
+                    if (hasImgLink) {
+                        const link = this.graph.links[imgInput.link];
+                        if (link) {
+                            const originNode = this.graph.getNodeById(link.origin_id);
+                            if (originNode && originNode.type === "PromptComboLoaderNode") {
+                                const comboWidget = originNode.widgets?.find(w => w.name === "选择组合");
+                                if (comboWidget) currentComboName = comboWidget.value;
+                            }
+                        }
+                    }
+
+                    if (currentComboName !== this.lastCombo) {
+                        this.lastCombo = currentComboName;
+                        let imgUrl = null;
+                        if (currentComboName && currentComboName !== "无可用组合_请先创建") {
+                            if (STATE.localDB.contexts && STATE.localDB.models?.main_models) {
+                                const parts = currentComboName.match(/^\[(.*?)\]\s*(.*)$/);
+                                if (parts) {
+                                    const m_name = parts[1];
+                                    const c_name = parts[2];
+                                    for (const [mId, mData] of Object.entries(STATE.localDB.models.main_models)) {
+                                        let checkName = (mData.name || mId).replace(/\[☁️在线\]\s*/, '').replace(/订阅库-\s*/, '');
+                                        if (checkName === m_name) {
+                                            const combo = STATE.localDB.contexts[`${mId}_global`]?.combos?.find(c => c.name === c_name);
+                                            if (combo && combo.image) { imgUrl = combo.image; break; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if (imgUrl) { 
+                            imgEl.src = imgUrl; // 移除暴力时间戳，拥抱浏览器物理缓存
+                            imgEl.style.display = "block";
+                            imgPlaceholder.style.display = "none";
+                        } else { 
+                            imgEl.style.display = "none";
+                            imgPlaceholder.style.display = "block";
+                            imgPlaceholder.innerText = currentComboName ? "该组合暂无预览图" : "等待输入连接...";
+                        }
+                    }
+                    
+                    setTimeout(checkUpdate, 300); // 加快 UI 感知速度
                 };
                 
-                // 绑定销毁事件
                 const onRemoved = this.onRemoved;
                 this.onRemoved = function() {
                     this.isDestroyed = true;
@@ -162,7 +278,7 @@ app.registerExtension({
                 };
 
                 checkUpdate();
-                this.setSize([400, 300]);
+                this.setSize([300, 300]);
             };
 
             const onExecuted = nodeType.prototype.onExecuted;
@@ -175,112 +291,6 @@ app.registerExtension({
                         renderViewerCards(this.viewerContainer, newVal, this);
                     }
                 }
-            };
-        }
-    }
-});
-
-// 注册: PromptPreviewNode
-app.registerExtension({
-    name: "PromptManager.PreviewNode",
-    async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name === "PromptPreviewNode") {
-            const onNodeCreated = nodeType.prototype.onNodeCreated;
-            nodeType.prototype.onNodeCreated = function () {
-                if (onNodeCreated) onNodeCreated.apply(this, arguments);
-                const container = document.createElement("div");
-                container.style.cssText = "width: 100%; height: 100%; min-height: 200px; display: flex; align-items: center; justify-content: center; background: #111; border-radius: 8px; overflow: hidden; border: 1px dashed #444;";
-                
-                const img = document.createElement("img");
-                img.style.cssText = "max-width: 100%; max-height: 100%; object-fit: contain; display: none; cursor: zoom-in;";
-                
-                const placeholder = document.createElement("div");
-                placeholder.style.cssText = "color: #555; font-size: 12px; font-weight: bold; text-align: center;";
-                placeholder.innerHTML = "等待连接到<br><span style='color:#ff6b9d'>[组合预设加载器]</span>";
-
-                // 新增：图片加载成功回调
-                img.onload = () => {
-                    img.style.display = "block";
-                    placeholder.style.display = "none";
-                };
-
-                // 新增：图片加载失败（死链/404）回调
-                img.onerror = () => {
-                    img.style.display = "none";
-                    placeholder.style.display = "block";
-                    placeholder.innerHTML = "预览图读取失败<br><span style='color:#f44336; font-size:10px;'>原图可能已被删除或移动</span>";
-                };
-
-                img.addEventListener("pointerup", (e) => {
-                    e.preventDefault(); e.stopPropagation();
-                    if (img.src && img.style.display === "block") { // 仅在图片正常显示时允许点击放大
-                        let viewer = document.getElementById("pm-standalone-viewer");
-                        const fullImgEl = document.getElementById("pm-standalone-img");
-                        if (viewer && fullImgEl) { fullImgEl.src = img.src; window.pmShowModal("pm-standalone-viewer"); }
-                    }
-                });
-                
-                container.appendChild(img); container.appendChild(placeholder);
-                this.addDOMWidget("preview_img", "HTML", container, { serialize: false, hideOnZoom: false });
-                
-                this.lastCombo = null;
-                this.isDestroyed = false; // 标记生命周期
-
-                const checkUpdate = () => {
-                    if (this.isDestroyed) return; // 节点删除时彻底终止轮询
-                    if (!this.graph || this.flags?.collapsed) { setTimeout(checkUpdate, 500); return; }
-                    let currentComboName = null;
-                    const input = this.inputs?.find(inp => inp.name === "图像" || inp.type === "IMAGE");
-                    if (input && input.link) {
-                        const link = this.graph.links[input.link];
-                        if (link) {
-                            const originNode = this.graph.getNodeById(link.origin_id);
-                            if (originNode && originNode.type === "PromptComboLoaderNode") {
-                                const comboWidget = originNode.widgets?.find(w => w.name === "选择组合");
-                                if (comboWidget) currentComboName = comboWidget.value;
-                            }
-                        }
-                    }
-                    if (currentComboName !== this.lastCombo) {
-                        this.lastCombo = currentComboName;
-                        if (!currentComboName || currentComboName === "无可用组合_请先创建") {
-                            img.style.display = "none"; placeholder.style.display = "block";
-                            placeholder.innerHTML = "等待连接到<br><span style='color:#ff6b9d'>[组合预设加载器]</span>";
-                        } else {
-                            let imgUrl = null;
-                            if (STATE.localDB.contexts && STATE.localDB.models?.main_models) {
-                                const parts = currentComboName.match(/^\[(.*?)\]\s*(.*)$/);
-                                if (parts) {
-                                    const m_name = parts[1];
-                                    const c_name = parts[2];
-                                    for (const [mId, mData] of Object.entries(STATE.localDB.models.main_models)) {
-                                        if ((mData.name || mId) === m_name) {
-                                            const combo = STATE.localDB.contexts[`${mId}_global`]?.combos?.find(c => c.name === c_name);
-                                            if (combo && combo.image) { imgUrl = combo.image; break; }
-                                        }
-                                    }
-                                }
-                            }
-                            if (imgUrl) { 
-                                img.src = imgUrl + "?t=" + new Date().getTime(); 
-                            }
-                            else { 
-                                img.style.display = "none"; placeholder.style.display = "block"; placeholder.innerText = "该组合尚未上传预览图"; 
-                            }
-                        }
-                    }
-                    setTimeout(checkUpdate, 300);
-                };
-
-                // 绑定销毁事件
-                const onRemoved = this.onRemoved;
-                this.onRemoved = function() {
-                    this.isDestroyed = true;
-                    if (onRemoved) onRemoved.apply(this, arguments);
-                };
-
-                checkUpdate();
-                this.setSize([280, 280]);
             };
         }
     }

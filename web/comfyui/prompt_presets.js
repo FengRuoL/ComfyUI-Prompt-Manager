@@ -24,32 +24,65 @@ function getCtxData(ctx) {
     return STATE.localDB.contexts[ctx];
 }
 
+// === 核心改造：独立隐藏的订阅库专属容器 ===
+// 作用：为每个订阅库创建独立的本地存储容器（以 fav_ 开头），实现互不干扰。并且利用特殊ID在前端UI中隐身。
+async function getLocalTwinModelId(currentModelId) {
+    if (!currentModelId) return null;
+    if (!currentModelId.startsWith('cloud_')) return currentModelId;
+
+    const favId = "fav_" + currentModelId; // 专属隐形容器ID，例如 fav_cloud_A
+
+    if (!STATE.localDB.models.main_models[favId]) {
+        const cloudModelName = STATE.localDB.models.main_models[currentModelId]?.name.replace('[☁️在线] ', '').trim() || "未知订阅库";
+        // 修复：后台注册名字绝不能包含方括号，否则会破坏节点正则匹配
+        STATE.localDB.models.main_models[favId] = { 
+            name: `订阅库-${cloudModelName}`, 
+            categories: [], 
+            modes: {} 
+        };
+        await PromptAPI.saveDB(STATE.localDB);
+    }
+    return favId;
+}
+
+window.PM_Global.utils.getLocalTwinModelId = getLocalTwinModelId;
+
 // ==========================================
 // 1. 收藏夹分组管理 API
 // ==========================================
 // === 附加排序逻辑 ===
-window.PM_Global.ui.openGroupsModal = function() {
-    const ctx = `${STATE.currentModelId}_global`;
+window.PM_Global.ui.openGroupsModal = async function() {
+    // 使用同名映射逻辑
+    let targetModelId = await getLocalTwinModelId(STATE.currentModelId);
+    
+    if (!targetModelId) {
+        // 如果当前没有任何选中项的兜底方案
+        for (const key of Object.keys(STATE.localDB.models.main_models)) {
+            if (!key.startsWith('cloud_')) { targetModelId = key; break; }
+        }
+        if (!targetModelId) return alert("请先在本地新建一个一级分类！");
+    }
+
+    const ctx = `${targetModelId}_global`;
     STATE.currentManageCtx = ctx; 
     const d = getCtxData(ctx);
-    
+
     let modal = document.getElementById("pm-groups-modal");
     if (!modal) {
         modal = document.createElement("div"); modal.id = "pm-groups-modal"; modal.className = "pm-modal-overlay"; 
         modal.innerHTML = `
             <div class="pm-create-box" style="width: 750px; height: 80vh;">
                 <div class="pm-create-header">
-                    <b style="color:#eee;">收藏夹管理</b>
+                    <b style="color:#eee;">收藏夹管理 (本地存储)</b>
                     <button class="pm-close-btn" onclick="pmHideModal('pm-groups-modal')">关闭</button>
                 </div>
                 <div class="pm-create-content" style="display:flex; flex-direction:column; height: 100%; padding:0;">
                     <div style="padding:15px; border-bottom:1px solid #333; background:#1a1a1a;">
                         <div style="display:flex; gap:10px;">
                             <input type="text" id="pm-new-grp-name" class="pm-search-input" placeholder="输入新分组名称...">
-                            <button class="pm-action-btn primary" onclick="PM_Global.ui.createNewGroup('${ctx}')">新建分组</button>
+                            <button class="pm-action-btn primary" onclick="PM_Global.ui.createNewGroup()">新建分组</button>
                             <button class="pm-action-btn" onclick="PM_Global.ui.exportGroups()">导出配置</button>
                             <button class="pm-action-btn" onclick="document.getElementById('pm-import-groups-file').click()">导入配置</button>
-                            <button class="pm-action-btn" style="color:#f8961e; border-color:#835213;" title="将旧版本存放收藏/管理的存储方式转换为新版本。若收藏/管理无法显示，或导入了旧版本数据时，请点击此按键。" onclick="PM_Global.utils.manualMigrateData()">格式迁移</button>
                         </div>
                         <input type="file" id="pm-import-groups-file" accept=".json" style="display:none;" onchange="PM_Global.ui.importGroups(event)">
                     </div>
@@ -61,7 +94,7 @@ window.PM_Global.ui.openGroupsModal = function() {
     }
     
     const content = document.getElementById("pm-groups-content");
-    if (d.groups.length === 0) content.innerHTML = `<div style="color:#555; text-align:center; padding:50px;">当前模型下没有收藏分组。</div>`;
+    if (d.groups.length === 0) content.innerHTML = `<div style="color:#555; text-align:center; padding:50px;">当前本地模型下没有收藏分组。</div>`;
     else content.innerHTML = '';
 
     d.groups.forEach((g, idx) => {
@@ -72,10 +105,7 @@ window.PM_Global.ui.openGroupsModal = function() {
         // 增加拖拽排序逻辑
         div.draggable = true;
         div.ondragstart = (e) => { e.dataTransfer.setData("text/plain", idx); e.stopPropagation(); };
-        div.ondragover = (e) => { 
-            e.preventDefault(); 
-            div.style.borderColor = "#ff6b9d"; 
-        };
+        div.ondragover = (e) => { e.preventDefault(); div.style.borderColor = "#ff6b9d"; };
         div.ondragleave = (e) => { div.style.borderColor = "#333"; };
         div.ondrop = async (e) => {
             e.preventDefault(); e.stopPropagation(); div.style.borderColor = "#333";
@@ -106,7 +136,8 @@ window.PM_Global.ui.openGroupsModal = function() {
     window.pmShowModal("pm-groups-modal");
 };
 
-window.PM_Global.ui.createNewGroup = async function(ctx) {
+window.PM_Global.ui.createNewGroup = async function() {
+    const ctx = STATE.currentManageCtx; // 动态获取当前激活的全局上下文
     const val = document.getElementById("pm-new-grp-name").value.trim();
     if (!val) return alert("请输入名称！");
     getCtxData(ctx).groups.unshift({ name: val, items: [] });
@@ -249,29 +280,38 @@ window.PM_Global.ui.importGroups = function(e) {
 // 2. 组合预设管理 API
 // ==========================================
 // === 附加排序逻辑 ===
-window.PM_Global.ui.openCombosModal = function() {
-    const ctx = `${STATE.currentModelId}_global`;
+window.PM_Global.ui.openCombosModal = async function() {
+    // 使用同名映射逻辑
+    let targetModelId = await getLocalTwinModelId(STATE.currentModelId);
+    
+    if (!targetModelId) {
+        // 如果当前没有任何选中项的兜底方案
+        for (const key of Object.keys(STATE.localDB.models.main_models)) {
+            if (!key.startsWith('cloud_')) { targetModelId = key; break; }
+        }
+        if (!targetModelId) return alert("请先在本地新建一个一级分类！");
+    }
+
+    const ctx = `${targetModelId}_global`;
     STATE.currentManageCtx = ctx; 
     const d = getCtxData(ctx);
-    
+
     let modal = document.getElementById("pm-combos-modal");
     if (!modal) {
         modal = document.createElement("div"); modal.id = "pm-combos-modal"; modal.className = "pm-modal-overlay"; 
         modal.innerHTML = `
             <div class="pm-create-box" style="width: 800px; height: 80vh;">
                 <div class="pm-create-header">
-                    <b style="color:#eee;">组合预设管理</b>
+                    <b style="color:#eee;">组合预设管理 (本地存储)</b>
                     <button class="pm-close-btn" onclick="pmHideModal('pm-combos-modal')">关闭</button>
                 </div>
                 <div class="pm-create-content" style="display:flex; flex-direction:column; height: 100%; padding:0;">
                     <div style="padding:15px; border-bottom:1px solid #333; background:#1a1a1a; display:flex; gap:10px;">
-                        <button class="pm-action-btn primary" style="flex:1;" onclick="PM_Global.ui.createNewCombo('${ctx}')">创建新组合</button>
+                        <button class="pm-action-btn primary" style="flex:1;" onclick="PM_Global.ui.createNewCombo()">创建新组合</button>
                         <button class="pm-action-btn" onclick="PM_Global.ui.exportCombos()">导出配置(含图)</button>
                         <button class="pm-action-btn" onclick="document.getElementById('pm-import-combos-file').click()">导入配置</button>
-                        <button class="pm-action-btn" style="color:#f8961e; border-color:#835213;" title="将旧版本存放收藏/管理的存储方式转换为新版本。若收藏/管理无法显示，或导入了旧版本数据时，请点击此按键。" onclick="PM_Global.utils.manualMigrateData()">格式迁移</button>
                         <input type="file" id="pm-import-combos-file" accept=".json" style="display:none;" onchange="PM_Global.ui.importCombos(event)">
                     </div>
-                    <!-- 修复 Bug 2：增加 padding-bottom 和 box-sizing，防止底部被遮挡 -->
                     <div id="pm-combos-content" style="flex:1; overflow-y:auto; padding:15px; padding-bottom: 80px; background:#111; box-sizing: border-box;"></div>
                 </div>
             </div>
@@ -292,14 +332,12 @@ window.PM_Global.ui.openCombosModal = function() {
                 
                 if (url) {
                     if (STATE.currentComboEditIdx === -1) {
-                        // 移除丢失的查重函数，改为安全删除
                         if (STATE.tempCombo.image) { try { await PromptAPI.deleteFile(STATE.tempCombo.image); } catch(err){} }
                         STATE.tempCombo.image = url;
                         window.PM_Global.ui.openComboEditModal(-1, currentCtx);
                     } else {
                         const cbs = STATE.localDB.contexts[currentCtx].combos;
                         const oldImg = cbs[STATE.currentComboEditIdx].image;
-                        // 移除丢失的查重函数，改为安全删除
                         if (oldImg) { try { await PromptAPI.deleteFile(oldImg); } catch(err){} }
                         cbs[STATE.currentComboEditIdx].image = url;
                         await PromptAPI.saveDB(STATE.localDB); 
@@ -324,10 +362,7 @@ window.PM_Global.ui.openCombosModal = function() {
         
         div.draggable = true;
         div.ondragstart = (e) => { e.dataTransfer.setData("text/plain", idx); e.stopPropagation(); };
-        div.ondragover = (e) => { 
-            e.preventDefault(); 
-            div.style.borderColor = "#ff6b9d"; 
-        };
+        div.ondragover = (e) => { e.preventDefault(); div.style.borderColor = "#ff6b9d"; };
         div.ondragleave = (e) => { div.style.borderColor = "#333"; };
         div.ondrop = async (e) => {
             e.preventDefault(); e.stopPropagation(); div.style.borderColor = "#333";
@@ -342,7 +377,7 @@ window.PM_Global.ui.openCombosModal = function() {
             }
         };
 
-        const imgUrl = c.image ? `${c.image}?t=${Date.now()}` : '';
+        const imgUrl = c.image ? c.image : ''; // 移除时间戳
         const imgHtml = c.image ? `<img src="${imgUrl}" style="width:100px; height:100px; object-fit:cover; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-viewer-img').src='${imgUrl}'; pmShowModal('pm-image-viewer');">` : `<div style="width:100px; height:100px; background:#222; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#444; font-size:12px;">无预览图</div>`;
         const promptStr = c.elements.map(e => e.weight != 1 ? `(${e.tag}:${e.weight})` : e.tag).join(', ');
 
@@ -364,7 +399,8 @@ window.PM_Global.ui.openCombosModal = function() {
     window.pmShowModal("pm-combos-modal");
 };
 
-window.PM_Global.ui.createNewCombo = async function(ctx) {
+window.PM_Global.ui.createNewCombo = async function() {
+    const ctx = STATE.currentManageCtx; // 动态获取当前激活的全局上下文
     STATE.currentComboEditIdx = -1; 
     STATE.tempCombo = { name: "新组合预设_" + Date.now(), elements: [], image: null };
     window.PM_Global.ui.openComboEditModal(-1, ctx);
@@ -410,11 +446,13 @@ window.PM_Global.ui.openComboEditModal = function(idx, ctx) {
         `;
     }
 
-    const imgUrl = c.image ? `${c.image}?t=${Date.now()}` : '';
+    const imgUrl = c.image ? c.image : ''; // 移除时间戳
     let imgArea = c.image ? `<img src="${imgUrl}" style="width:100%; height:200px; object-fit:contain; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-hidden-combo-img').click()">` : `<div style="width:100%; height:200px; background:#111; border:1px dashed #444; border-radius:8px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#777;" onclick="document.getElementById('pm-hidden-combo-img').click()">点击上传预览图</div>`;
 
+    // 核心保护：把双引号转义为 &quot; 防止切断 HTML 的 value=""
+    const safeName = c.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     document.getElementById("pm-cedit-content").innerHTML = `
-        <input type="text" class="pm-search-input" style="width:100%; margin-bottom:15px; font-weight:bold; font-size:14px;" value="${c.name}" onchange="PM_Global.ui.updateComboName(${idx}, '${ctx}', this.value)">
+        <input type="text" class="pm-search-input" style="width:100%; margin-bottom:15px; font-weight:bold; font-size:14px;" value="${safeName}" onchange="PM_Global.ui.updateComboName(${idx}, '${ctx}', this.value)">
         ${imgArea}
         <div style="margin: 15px 0 5px 0; color:#888; font-size:12px; display:flex; justify-content:space-between; align-items:center;">
             <span>组合标签列表：</span>
@@ -428,8 +466,9 @@ window.PM_Global.ui.openComboEditModal = function(idx, ctx) {
     if (c.elements.length === 0) elContainer.innerHTML = `<div style="color:#555; text-align:center;">暂无标签，请添加。</div>`;
     c.elements.forEach((el, elIdx) => {
         const elDiv = document.createElement("div"); elDiv.style.display = "flex"; elDiv.style.gap = "8px"; elDiv.style.marginBottom = "8px";
+        const safeTag = el.tag.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         elDiv.innerHTML = `
-            <input type="text" class="pm-search-input" style="flex:3; padding:6px 10px;" value="${el.tag}" onchange="PM_Global.ui.updateComboEl(${idx}, ${elIdx}, 'tag', this.value, '${ctx}')">
+            <input type="text" class="pm-search-input" style="flex:3; padding:6px 10px;" value="${safeTag}" onchange="PM_Global.ui.updateComboEl(${idx}, ${elIdx}, 'tag', this.value, '${ctx}')">
             <input type="number" step="0.1" class="pm-search-input" style="flex:1; padding:6px 10px;" value="${el.weight || 1}" onchange="PM_Global.ui.updateComboEl(${idx}, ${elIdx}, 'weight', this.value, '${ctx}')">
             <button class="pm-text-btn danger" onclick="PM_Global.ui.removeComboEl(${idx}, ${elIdx}, '${ctx}')">删除</button>
         `;
@@ -714,7 +753,7 @@ app.registerExtension({
 });
 
 // ==========================================
-// 4. 注册：Prompt组合预设加载器节点前端拦截
+// 4. 注册：Prompt组合预设加载器节点前端拦截 (全新双栏 UI)
 // ==========================================
 app.registerExtension({
     name: "PromptManager.ComboLoaderNode",
@@ -723,69 +762,159 @@ app.registerExtension({
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 if (onNodeCreated) onNodeCreated.apply(this, arguments);
+
+                // 强制隐藏后端的三个底层文本输入框
+                setTimeout(() => {
+                    const wName = this.widgets?.find(w => w.name === "选择组合");
+                    const wPrompt = this.widgets?.find(w => w.name === "combo_prompt");
+                    const wImage = this.widgets?.find(w => w.name === "combo_image");
+                    
+                    if (wName) { wName.hidden = true; wName.computeSize = () => [0,0]; }
+                    if (wPrompt) { wPrompt.hidden = true; wPrompt.computeSize = () => [0,0]; }
+                    if (wImage) { wImage.hidden = true; wImage.computeSize = () => [0,0]; }
+                    this.setSize([500, 320]);
+                }, 10);
+
+                // 构建主容器
+                const container = document.createElement("div");
+                // 【核心修复】：增加 pointer-events: auto 强制开启鼠标事件响应
+                container.style.cssText = "width: 100%; height: 260px; display: flex; gap: 8px; font-family: sans-serif; padding: 4px; box-sizing: border-box; pointer-events: auto;";
                 
-                const comboWidget = this.widgets?.find(w => w.name === "选择组合");
-                if (comboWidget) {
-                    // 1. 拦截下拉列表选项的写入（免疫任何外部同步脚本的格式破坏）
-                    if (comboWidget.options) {
-                        let realValues = comboWidget.options.values || [];
-                        Object.defineProperty(comboWidget.options, 'values', {
-                            get: function() { return realValues; },
-                            set: function(newVals) {
-                                if (!newVals || !Array.isArray(newVals)) {
-                                    realValues = newVals;
-                                    return;
-                                }
-                                const db = window.PM_Global?.state?.localDB;
-                                const models = db?.models?.main_models || {};
-                                
-                                // 清洗并强行修正所有灌入选项，确保有 [模型名] 前缀
-                                realValues = newVals.map(v => {
-                                    if (typeof v === 'string' && !v.startsWith('[')) {
-                                        const rawName = v.includes('|') ? v.split('|').pop().trim() : v.trim();
-                                        if (db && db.contexts) {
-                                            for (const ctx of Object.keys(db.contexts)) {
-                                                if (db.contexts[ctx].combos?.some(c => c.name === rawName)) {
-                                                    const mId = ctx.split('_')[0];
-                                                    const mName = models[mId]?.name || mId;
-                                                    return `[${mName}] ${rawName}`;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    return v;
-                                });
-                                // 剔除重复项
-                                realValues = [...new Set(realValues)];
-                            },
-                            configurable: true
+                // 【终极事件护盾】：彻底隔绝 LiteGraph 对鼠标的所有劫持
+                const stopPropagation = (e) => { e.stopPropagation(); };
+                ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'dblclick', 'wheel'].forEach(evt => {
+                    container.addEventListener(evt, stopPropagation, { passive: false });
+                });
+
+                // 左侧栏：本地组合 (绿色系)
+                const leftCol = document.createElement("div");
+                leftCol.style.cssText = "flex: 1; min-height: 50px; max-height: 280px; overflow-y: auto; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; padding: 5px; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px;";
+                const leftHeader = document.createElement("div");
+                leftHeader.style.cssText = "display: flex; justify-content: space-between; font-size: 11px; color: #4caf50; font-weight: bold; padding: 0 5px 4px 5px; border-bottom: 1px dashed rgba(76,175,80,0.4); margin-bottom: 4px;";
+                leftHeader.innerHTML = `<span>&lt;本地组合库&gt;</span>`;
+                const leftList = document.createElement("div");
+                leftList.style.cssText = "display: flex; flex-direction: column; gap: 4px;";
+                leftCol.appendChild(leftHeader); leftCol.appendChild(leftList);
+
+                // 右侧栏：云端组合 (粉色系)
+                const rightCol = document.createElement("div");
+                rightCol.style.cssText = "flex: 1; min-height: 50px; max-height: 280px; overflow-y: auto; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; padding: 5px; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px;";
+                const rightHeader = document.createElement("div");
+                rightHeader.style.cssText = "display: flex; justify-content: space-between; font-size: 11px; color: #ff6b9d; font-weight: bold; padding: 0 5px 4px 5px; border-bottom: 1px dashed rgba(255,107,157,0.4); margin-bottom: 4px;";
+                rightHeader.innerHTML = `<span>&lt;订阅云端库&gt;</span>`;
+                const rightList = document.createElement("div");
+                rightList.style.cssText = "display: flex; flex-direction: column; gap: 4px;";
+                rightCol.appendChild(rightHeader); rightCol.appendChild(rightList);
+
+                container.appendChild(leftCol);
+                container.appendChild(rightCol);
+                this.addDOMWidget("combo_ui", "HTML", container, { serialize: false, hideOnZoom: false });
+
+                this.isDestroyed = false;
+                this.lastComboStateStr = ""; 
+                const onRemoved = this.onRemoved;
+                this.onRemoved = function() { this.isDestroyed = true; clearInterval(this.refreshInterval); if(onRemoved) onRemoved.apply(this, arguments); };
+
+                // 核心渲染函数
+                const renderItem = (c, isCloud) => {
+                    const wName = this.widgets?.find(w => w.name === "选择组合");
+                    const isSelected = wName && wName.value === c.identifier;
+                    
+                    const itemDiv = document.createElement("div");
+                    const bgColor = isSelected ? (isCloud ? '#5a1a3a' : '#1e3e1e') : '#252525';
+                    const borderColor = isSelected ? (isCloud ? '#ff6b9d' : '#4caf50') : 'transparent';
+                    
+                    itemDiv.style.cssText = `display: flex; justify-content: space-between; align-items: center; background: ${bgColor}; padding: 4px 6px; border-radius: 4px; transition: 0.2s; cursor: pointer; border: 1px solid ${borderColor};`;
+                    itemDiv.innerHTML = `<span style="color: #ddd; font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: bold; user-select: none;" title="${c.displayName}"><span style="color:${isCloud?'#ff6b9d':'#4caf50'};">[${c.modelName}]</span> ${c.displayName}</span>`;
+
+                    // 【核心修复】：改用原生 onclick，结合上方的拦截护盾，确保 100% 点击成功
+                    itemDiv.onclick = (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (wName) wName.value = c.identifier;
+                        
+                        const wPrompt = this.widgets?.find(w => w.name === "combo_prompt");
+                        const wImage = this.widgets?.find(w => w.name === "combo_image");
+                        if (wPrompt) wPrompt.value = c.promptStr;
+                        if (wImage) wImage.value = c.image || "";
+                        
+                        app.graph.setDirtyCanvas(true);
+                        this.updateComboLists(true);
+                    };
+                    return itemDiv;
+                };
+
+                // 轮询与更新逻辑
+                this.updateComboLists = (forceUpdate = false) => {
+                    if (this.isDestroyed || !window.PM_Global?.state?.localDB) return;
+                    const db = window.PM_Global.state.localDB;
+                    const models = db.models?.main_models || {};
+                    const wName = this.widgets?.find(w => w.name === "选择组合");
+
+                    let localCombos = [];
+                    let cloudCombos = [];
+
+                    for (const [mId, mData] of Object.entries(models)) {
+                        const globalCtx = `${mId}_global`;
+                        const cbs = db.contexts?.[globalCtx]?.combos || [];
+                        if (cbs.length === 0) continue;
+
+                        let isCloud = false;
+                        let mName = mData.name || mId;
+
+                        if (mId.startsWith('cloud_')) {
+                            isCloud = true;
+                            mName = mName.replace(/\[☁️在线\]\s*/, '');
+                        } else if (mId.startsWith('fav_cloud_')) {
+                            // 让订阅库的个人补充预设，也作为“云端数据”展示在右侧粉色列表中
+                            isCloud = true; 
+                            mName = mName.replace(/订阅库-\s*/, '');
+                        }
+
+                        cbs.forEach(c => {
+                            const promptStr = c.elements.map(e => e.weight != 1 ? `(${e.tag}:${e.weight})` : e.tag).join(', ');
+                            const comboObj = {
+                                identifier: `[${mData.name || mId}] ${c.name}`,
+                                modelName: mName,
+                                displayName: c.name,
+                                promptStr: promptStr,
+                                image: c.image
+                            };
+                            if (isCloud) cloudCombos.push(comboObj);
+                            else localCombos.push(comboObj);
                         });
                     }
 
-                    // 2. 拦截当前选择值的写入与读取（兼容历史旧版节点和脏数据复原）
-                    let realValue = comboWidget.value;
-                    Object.defineProperty(comboWidget, 'value', {
-                        get: function() { return realValue; },
-                        set: function(v) {
-                            if (typeof v === 'string' && !v.startsWith('[')) {
-                                const rawName = v.includes('|') ? v.split('|').pop().trim() : v.trim();
-                                if (comboWidget.options && comboWidget.options.values) {
-                                    const matched = comboWidget.options.values.find(opt => opt.endsWith(`] ${rawName}`));
-                                    if (matched) {
-                                        realValue = matched;
-                                        return;
-                                    }
-                                }
-                            }
-                            realValue = v;
-                        },
-                        configurable: true
-                    });
+                    // 状态对比：如果数据和选中项都没变，就不重绘DOM（保护滚动条位置）
+                    const currentState = JSON.stringify({ local: localCombos, cloud: cloudCombos, selected: wName ? wName.value : null });
+                    if (!forceUpdate && this.lastComboStateStr === currentState) return;
+                    this.lastComboStateStr = currentState;
 
-                    // 强制触发一次清洗，立刻洗掉加载时现存的脏数据
-                    if (comboWidget.options && comboWidget.options.values) comboWidget.options.values = comboWidget.options.values;
-                    if (comboWidget.value) comboWidget.value = comboWidget.value;
-                }
+                    // 渲染本地列表
+                    leftList.innerHTML = '';
+                    if (localCombos.length === 0) leftList.innerHTML = '<div style="color:#555; text-align:center; padding:15px; font-size:11px;">无本地组合</div>';
+                    else localCombos.forEach(c => leftList.appendChild(renderItem(c, false)));
+
+                    // 渲染云端列表
+                    rightList.innerHTML = '';
+                    if (cloudCombos.length === 0) rightList.innerHTML = '<div style="color:#555; text-align:center; padding:15px; font-size:11px;">无云端组合</div>';
+                    else cloudCombos.forEach(c => rightList.appendChild(renderItem(c, true)));
+                    
+                    // 向下兼容：自动补充旧节点缺失的隐形文本数据
+                    const wPrompt = this.widgets?.find(w => w.name === "combo_prompt");
+                    const wImage = this.widgets?.find(w => w.name === "combo_image");
+                    if (wName && wName.value) {
+                        const selected = [...localCombos, ...cloudCombos].find(c => c.identifier === wName.value);
+                        if (selected) {
+                            if (wPrompt && !wPrompt.value) wPrompt.value = selected.promptStr;
+                            if (wImage && !wImage.value) wImage.value = selected.image || "";
+                        }
+                    }
+                };
+
+                setTimeout(() => this.updateComboLists(true), 500);
+                this.refreshInterval = setInterval(() => this.updateComboLists(), 1500); // 加快轮询频率
+                this.setSize([500, 320]);
             };
         }
     }
