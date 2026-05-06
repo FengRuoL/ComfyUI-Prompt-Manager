@@ -920,3 +920,284 @@ app.registerExtension({
         }
     }
 });
+
+// ==========================================
+// 5. 注册：Prompt批量读取器节点前端拦截 (全新三栏自适应 UI)
+// ==========================================
+app.registerExtension({
+    name: "PromptManager.BatchReaderNode",
+    async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === "PromptBatchReaderNode") {
+            
+            // 拦截执行结果，接收 Python 端传来的进度
+            const onExecuted = nodeType.prototype.onExecuted;
+            nodeType.prototype.onExecuted = function(message) {
+                if (onExecuted) onExecuted.apply(this, arguments);
+                if (message && message.progress) {
+                    const currentIdx = message.progress[0];
+                    if (this.highlightProgress) this.highlightProgress(currentIdx);
+                }
+            };
+
+            // 【新增】：修复刷新页面/加载工作流时，数据丢失的问题
+            const onConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function(info) {
+                if (onConfigure) onConfigure.apply(this, arguments);
+                // 工作流加载完成后，强制将原生 widget 的真实值同步给我们的自定义 UI
+                if (this.uiRefs) {
+                    const wList = this.widgets.find(w => w.name === "批量列表_每行一个");
+                    const wPrefix = this.widgets.find(w => w.name === "固定前缀");
+                    const wSuffix = this.widgets.find(w => w.name === "固定后缀");
+                    
+                    if (wPrefix) this.uiRefs.taPrefix.value = wPrefix.value;
+                    if (wSuffix) this.uiRefs.taSuffix.value = wSuffix.value;
+                    if (wList) {
+                        this.uiRefs.taList.value = wList.value;
+                        this.uiRefs.renderStrips(); // 重新渲染列表条目
+                    }
+                }
+            };
+
+            const onNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                if (onNodeCreated) onNodeCreated.apply(this, arguments);
+
+                // 创建一个对象来存储 DOM 引用，方便其他生命周期函数调用
+                this.uiRefs = {};
+
+                // 1. 找到原生节点并“完美隐身化”
+                const wList = this.widgets.find(w => w.name === "批量列表_每行一个");
+                const wPrefix = this.widgets.find(w => w.name === "固定前缀");
+                const wSuffix = this.widgets.find(w => w.name === "固定后缀");
+                const wReset = this.widgets.find(w => w.name === "reset_timestamp");
+
+                [wList, wPrefix, wSuffix, wReset].forEach(w => {
+                    if (w) {
+                        // 1. 告诉 ComfyUI/LiteGraph 这是一个被隐藏的自定义控件
+                        w.type = "custom_hidden";
+                        w.hidden = true; 
+                        
+                        // 2. 强制宽高占位为 0
+                        w.computeSize = () => [0, 0];
+                        
+                        // 3. 【终极杀招】劫持它的 Canvas 绘制函数，让它什么都不画！
+                        w.draw = function(ctx, node, widget_width, y, widget_height) { 
+                            // 留空，阻断 LiteGraph 的默认灰色底框渲染
+                        };
+                        
+                        // 4. 隐藏原生的 HTML 输入框（如果有的话）
+                        if (w.inputEl) {
+                            w.inputEl.style.display = "none";
+                            w.inputEl.style.visibility = "hidden";
+                        }
+                    }
+                });
+
+                // 2. 构建三栏 Flex 容器
+                const container = document.createElement("div");
+                container.style.cssText = "display: flex; width: 100%; height: 260px; gap: 8px; padding: 4px; box-sizing: border-box; background: #151515; border-radius: 6px; pointer-events: auto; font-family: sans-serif;";
+
+                const stopProp = (e) => e.stopPropagation();
+                ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'dblclick', 'wheel', 'keydown', 'keyup'].forEach(evt => {
+                    container.addEventListener(evt, stopProp, { passive: false });
+                });
+
+                // --- 左栏：固定前缀 ---
+                const col1 = document.createElement("div");
+                col1.style.cssText = "flex: 1; display: flex; flex-direction: column; background: #1e1e1e; border: 1px solid #333; border-radius: 4px; overflow: hidden;";
+                col1.innerHTML = `<div style="font-size: 11px; color: #ff6b9d; padding: 6px; border-bottom: 1px dashed rgba(255,107,157,0.4); font-weight: bold; text-align: center;">&lt;固定前缀&gt;</div>`;
+                const taPrefix = document.createElement("textarea");
+                taPrefix.style.cssText = "flex: 1; background: transparent; border: none; color: #ccc; padding: 8px; font-size: 12px; resize: none; outline: none; line-height: 1.5;";
+                taPrefix.value = wPrefix ? wPrefix.value : "";
+                taPrefix.oninput = () => { if (wPrefix) wPrefix.value = taPrefix.value; app.graph.setDirtyCanvas(true); };
+                col1.appendChild(taPrefix);
+                this.uiRefs.taPrefix = taPrefix;
+
+                // --- 右栏：固定后缀 ---
+                const col3 = document.createElement("div");
+                col3.style.cssText = "flex: 1; display: flex; flex-direction: column; background: #1e1e1e; border: 1px solid #333; border-radius: 4px; overflow: hidden;";
+                col3.innerHTML = `<div style="font-size: 11px; color: #ff6b9d; padding: 6px; border-bottom: 1px dashed rgba(255,107,157,0.4); font-weight: bold; text-align: center;">&lt;固定后缀&gt;</div>`;
+                const taSuffix = document.createElement("textarea");
+                taSuffix.style.cssText = "flex: 1; background: transparent; border: none; color: #ccc; padding: 8px; font-size: 12px; resize: none; outline: none; line-height: 1.5;";
+                taSuffix.value = wSuffix ? wSuffix.value : "";
+                taSuffix.oninput = () => { if (wSuffix) wSuffix.value = taSuffix.value; app.graph.setDirtyCanvas(true); };
+                col3.appendChild(taSuffix);
+                this.uiRefs.taSuffix = taSuffix;
+
+                // --- 中栏：核心画师列表 ---
+                const col2 = document.createElement("div");
+                col2.style.cssText = "flex: 3; display: flex; flex-direction: column; background: #1a1a1a; border: 1px solid #4caf50; border-radius: 4px; overflow: hidden;";
+                
+                const listHeader = document.createElement("div");
+                listHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #4caf50; padding: 4px 8px; border-bottom: 1px solid #333; font-weight: bold; background: #111;";
+                listHeader.innerHTML = `<span>核心队列 (<span id="pm-batch-count">0</span>) - 进度: <span id="pm-run-progress" style="color:#ff9800;">等待开始</span></span> 
+                <div style="display:flex; gap:6px;">
+                    <button id="pm-reset-btn" style="background:#ff9800; border:none; color:#fff; border-radius:3px; cursor:pointer; font-size:10px; padding: 2px 6px; font-weight:bold; transition: 0.2s;" title="重置执行进度回到第1个">↺ 从头开始</button>
+                    <button id="pm-batch-edit-btn" style="background:none; border:1px solid #4caf50; color:#4caf50; border-radius:3px; cursor:pointer; font-size:10px; padding: 2px 6px; transition: 0.2s;">批量编辑</button>
+                </div>`;
+                
+                const listBody = document.createElement("div");
+                listBody.style.cssText = "flex: 1; position: relative;";
+
+                const taList = document.createElement("textarea");
+                taList.style.cssText = "position: absolute; top:0; left:0; width: 100%; height: 100%; background: #0f190f; border: none; color: #eee; padding: 8px; font-size: 12px; resize: none; outline: none; display: none; box-sizing: border-box; line-height: 1.5;";
+                taList.placeholder = "在此粘贴长串名单，一行一个，点击【完成】即可转换...";
+                this.uiRefs.taList = taList;
+
+                const stripContainer = document.createElement("div");
+                stripContainer.style.cssText = "position: absolute; top:0; left:0; width: 100%; height: 100%; overflow-y: auto; padding: 6px; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; scroll-behavior: smooth;";
+
+                listBody.appendChild(stripContainer);
+                listBody.appendChild(taList);
+                col2.appendChild(listHeader);
+                col2.appendChild(listBody);
+
+                container.appendChild(col1);
+                container.appendChild(col2);
+                container.appendChild(col3);
+
+                this.addDOMWidget("batch_reader_ui", "HTML", container, { serialize: false, hideOnZoom: false });
+
+                let isEditing = false;
+                const editBtn = listHeader.querySelector("#pm-batch-edit-btn");
+                const resetBtn = listHeader.querySelector("#pm-reset-btn");
+                const countSpan = listHeader.querySelector("#pm-batch-count");
+                const progressSpan = listHeader.querySelector("#pm-run-progress");
+
+                resetBtn.onclick = () => {
+                    if (wReset) {
+                        wReset.value = Date.now().toString(); 
+                        app.graph.setDirtyCanvas(true);
+                        progressSpan.innerText = "已重置到 0";
+                        progressSpan.style.color = "#ff9800";
+                        const allStrips = stripContainer.querySelectorAll('.pm-batch-strip');
+                        allStrips.forEach(s => {
+                            s.style.background = "#252a25";
+                            s.classList.remove("active");
+                        });
+                        resetBtn.style.background = "#fff";
+                        setTimeout(() => resetBtn.style.background = "#ff9800", 200);
+                    }
+                };
+
+                const renderStrips = () => {
+                    stripContainer.innerHTML = "";
+                    const val = wList ? wList.value : "";
+                    const items = val.split('\n').map(s => s.trim()).filter(s => s);
+                    countSpan.innerText = items.length;
+
+                    if (items.length === 0) {
+                        stripContainer.innerHTML = '<div style="color:#555; text-align:center; padding-top:40px; font-size:12px;">队列为空<br><br>请点击右上角【批量编辑】粘贴数据</div>';
+                        return;
+                    }
+
+                    items.forEach((item, idx) => {
+                        const strip = document.createElement("div");
+                        strip.className = "pm-batch-strip"; 
+                        strip.id = `pm-strip-${idx + 1}`;
+                        strip.style.cssText = "display: flex; justify-content: space-between; align-items: center; background: #252a25; border-left: 3px solid #4caf50; padding: 4px 8px; border-radius: 2px; transition: 0.2s;";
+                        
+                        strip.onmouseover = () => { strip.style.background = "#2e3a2e"; };
+                        strip.onmouseout = () => { strip.style.background = strip.classList.contains("active") ? "#4caf50" : "#252a25"; };
+                        
+                        const textWrap = document.createElement("div");
+                        textWrap.style.cssText = "display: flex; align-items: center; gap: 8px; overflow: hidden;";
+
+                        const numSpan = document.createElement("span");
+                        numSpan.style.cssText = "background: #111; color: #888; font-size: 10px; padding: 2px 5px; border-radius: 4px; font-family: monospace; min-width: 24px; text-align: center;";
+                        numSpan.innerText = idx + 1;
+                        
+                        const textSpan = document.createElement("span");
+                        textSpan.style.cssText = "color: #eee; font-size: 12px; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+                        textSpan.innerText = item;
+
+                        textWrap.appendChild(numSpan);
+                        textWrap.appendChild(textSpan);
+
+                        const delBtn = document.createElement("button");
+                        delBtn.innerText = "×";
+                        delBtn.style.cssText = "background: transparent; color: #f44336; border: none; cursor: pointer; font-weight: bold; font-size: 14px; padding: 0 4px;";
+                        delBtn.onclick = (e) => {
+                            e.stopPropagation();
+                            items.splice(idx, 1);
+                            if (wList) wList.value = items.join('\n');
+                            app.graph.setDirtyCanvas(true);
+                            renderStrips(); 
+                        };
+
+                        strip.appendChild(textWrap);
+                        strip.appendChild(delBtn);
+                        stripContainer.appendChild(strip);
+                    });
+                };
+                
+                // 挂载到实例上，供 onConfigure 使用
+                this.uiRefs.renderStrips = renderStrips;
+
+                this.highlightProgress = (currentIdx) => {
+                    progressSpan.innerText = `第 ${currentIdx} 个`;
+                    progressSpan.style.color = "#00e5ff";
+                    
+                    const allStrips = stripContainer.querySelectorAll('.pm-batch-strip');
+                    allStrips.forEach(s => {
+                        s.style.background = "#252a25";
+                        s.classList.remove("active");
+                    });
+                    
+                    const targetStrip = stripContainer.querySelector(`#pm-strip-${currentIdx}`);
+                    if (targetStrip) {
+                        targetStrip.style.background = "#4caf50";
+                        targetStrip.classList.add("active");
+                        
+                        const stripRect = targetStrip.getBoundingClientRect();
+                        const containerRect = stripContainer.getBoundingClientRect();
+                        if (stripRect.top < containerRect.top || stripRect.bottom > containerRect.bottom) {
+                            targetStrip.scrollIntoView({ behavior: "smooth", block: "center" });
+                        }
+                    }
+                };
+
+                const toggleEdit = () => {
+                    isEditing = !isEditing;
+                    if (isEditing) {
+                        taList.value = wList ? wList.value : "";
+                        taList.style.display = "block";
+                        stripContainer.style.display = "none";
+                        editBtn.innerText = "✓ 完成";
+                        editBtn.style.color = "#fff";
+                        editBtn.style.background = "#4caf50";
+                        taList.focus();
+                    } else {
+                        if (wList) wList.value = taList.value;
+                        app.graph.setDirtyCanvas(true);
+                        taList.style.display = "none";
+                        stripContainer.style.display = "flex";
+                        editBtn.innerText = "批量编辑";
+                        editBtn.style.color = "#4caf50";
+                        editBtn.style.background = "none";
+                        renderStrips();
+                    }
+                };
+
+                editBtn.onclick = toggleEdit;
+                renderStrips();
+
+                const htmlWidgetRef = this.widgets.find(w => w.type === "HTML" && w.name === "batch_reader_ui");
+
+                const desiredOrder = [
+                    htmlWidgetRef, 
+                    wList,      
+                    wPrefix,    
+                    wSuffix,
+                    wReset
+                ].filter(Boolean);
+
+                const otherWidgets = this.widgets.filter(w => !desiredOrder.includes(w));
+                this.widgets = [...desiredOrder, ...otherWidgets];
+                this.widgets = this.widgets.filter(w => w.name !== "重置进度从头开始");
+
+                this.setSize([700, 320]);
+            };
+        }
+    }
+});

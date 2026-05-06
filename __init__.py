@@ -170,9 +170,7 @@ def get_group_choices():
 
 def normalize_prompt_name(name):
     if not name: return name
-    name = re.sub(r'\\\(', '(', name)      # 解除转义左括号
-    name = re.sub(r'\\\)', ')', name)      # 解除转义右括号
-    name = re.sub(r'[\s_]*\(', '_(', name) # 将括号前的所有空格或下划线统一标准化为 _(
+    # 修复：移除所有破坏性的强制格式转换，100%原样保留反斜杠和空格，仅去除首尾多余换行符
     return name.strip()
 
 # ==========================================
@@ -382,6 +380,53 @@ class PromptGroupRandomizerNode:
     RETURN_TYPES = ("STRING",); RETURN_NAMES = ("prompt字符串",); FUNCTION = "process"; CATEGORY = "Prompt Manager"
     def process(self, 选择分组, 抽取数量, 输入prompt): return (输入prompt,)
 
+class PromptBatchReaderNode:
+    # 使用字典记录每个不同内容的运行进度，防止多节点互相污染
+    _states = {}
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "批量列表_每行一个": ("STRING", {"multiline": True, "default": "@satou_kibi\n@wagashi"}),
+                "固定前缀": ("STRING", {"multiline": True, "default": "masterpiece, best quality, score_9, newest, highres, 1girl, solo, "}),
+                "固定后缀": ("STRING", {"multiline": True, "default": ", cowboy shot, looking at viewer"}),
+                # 新增隐藏参数接收前端传来的重置时间戳，彻底干掉手动开关
+                "reset_timestamp": ("STRING", {"default": ""}) 
+            }
+        }
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("发送给采样器的Prompt", "原始名称(连给一键导入)")
+    FUNCTION = "process"
+    CATEGORY = "Prompt Manager"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("NaN") 
+
+    def process(self, 批量列表_每行一个, 固定前缀, 固定后缀, reset_timestamp):
+        # 使用 reset_timestamp 作为当前状态的唯一 Key（如果没有则用 default）
+        state_key = reset_timestamp if reset_timestamp else "default_state"
+        
+        # 初始化该节点的进度
+        if state_key not in self._states:
+            self._states[state_key] = 0
+            
+        lines = [line.strip() for line in 批量列表_每行一个.strip().split('\n') if line.strip()]
+        if not lines: 
+            return {"ui": {"progress": [0, "空数据"]}, "result": (f"{固定前缀}{固定后缀}", "空数据")}
+        
+        # 按索引取值
+        current_idx = self._states[state_key] % len(lines)
+        raw_name = lines[current_idx]
+        
+        # 进度 + 1
+        self._states[state_key] += 1
+        
+        final_prompt = f"{固定前缀}{raw_name}{固定后缀}"
+        print(f"[挂机进度] 当前生成: {current_idx + 1}/{len(lines)} -> {raw_name}")
+        
+        return {"ui": {"progress": [current_idx + 1, raw_name]}, "result": (final_prompt, raw_name)}
 # ==========================================
 # 路由映射
 # ==========================================
@@ -544,12 +589,14 @@ NODE_CLASS_MAPPINGS = {
     "PromptViewerNode": PromptViewerNode,
     "PromptImportNode": PromptImportNode,
     "PromptComboLoaderNode": PromptComboLoaderNode,
-    "PromptGroupRandomizerNode": PromptGroupRandomizerNode
+    "PromptGroupRandomizerNode": PromptGroupRandomizerNode,
+    "PromptBatchReaderNode": PromptBatchReaderNode  # <--- 新增这行
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptBrowserNode": "Prompt浏览器", 
     "PromptViewerNode": "Prompt展示器",
     "PromptImportNode": "Prompt一键导入",
     "PromptComboLoaderNode": "Prompt组合预设加载器",
-    "PromptGroupRandomizerNode": "Prompt收藏夹盲盒"
+    "PromptGroupRandomizerNode": "Prompt收藏夹盲盒",
+    "PromptBatchReaderNode": "Prompt批量读取"
 }

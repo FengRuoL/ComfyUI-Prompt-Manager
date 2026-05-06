@@ -30,10 +30,10 @@ class TopPromptIconManager {
             }
         }, 200);
 
-        // 兜底超时
+        // 兜底超时。修复：大幅延长超时时间，照顾老爷机和重度插件用户
         setTimeout(() => {
             clearInterval(checkContainer);
-        }, 3000);
+        }, 15000);
     }
 
     createPromptIcon(settingsGroup) {

@@ -70,11 +70,8 @@ Object.assign(window.PM_Global.utils, {
 // 在 cyrb53 或 parsePromptText 的同级位置，加入：
     normalizePromptName(name) {
         if (!name) return name;
-        return name
-            .replace(/\\\(/g, '(')
-            .replace(/\\\)/g, ')')
-            .replace(/[\s_]*\(/g, '_(')
-            .trim();
+        // 修复：移除所有强行过滤机制，允许用户输入包含反斜杠 \ 和 空格 的 Anima 专属画师串
+        return name.trim();
     },
 
     buildPromptText(list) {
