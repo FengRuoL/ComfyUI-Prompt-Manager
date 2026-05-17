@@ -72,7 +72,7 @@ export const PromptAPI = {
                 console.warn("[Prompt Manager] 在线图库加载超时或失败，当前仅显示本地数据。真实报错:", e.message || e);
             }
 
-            // 3. 将云端数据“安全合并”到本地数据中展示 (打上 cloud_ 标签)
+            // 3. 将云端数据"安全合并"到本地数据中展示 (打上 cloud_ 标签)
             if (fetchCloudSuccess && cloudData.models && cloudData.models.main_models) {
                 for (let mId in cloudData.models.main_models) {
                     let cloudModelId = `cloud_${mId}`;
@@ -92,26 +92,54 @@ export const PromptAPI = {
     },
     
     saveTimer: null,
-    async saveDB(dbData) {
-        if (this.saveTimer) clearTimeout(this.saveTimer);
-        return new Promise((resolve) => {
-            this.saveTimer = setTimeout(async () => {
-                try {
-                    // 核心：保存前，剥离所有云端数据，防止把几百MB的云端数据塞进用户本地硬盘
-                    let dataToSave = JSON.parse(JSON.stringify(dbData));
-                    for (let mId in dataToSave.models.main_models) { if (mId.startsWith('cloud_')) delete dataToSave.models.main_models[mId]; }
-                    for (let ctx in dataToSave.contexts) { if (ctx.startsWith('cloud_')) delete dataToSave.contexts[ctx]; }
-                    for (let imgKey in dataToSave.images) { if (imgKey.startsWith('cloud_')) delete dataToSave.images[imgKey]; }
+    pendingResolves: [],   // 收集所有因 debounce 被替换而悬空的 resolve 函数
+    saveLock: null,         // 并发保存互斥锁：保存进行中时为 Promise，否则为 null
 
-                    await fetch('/api/prompt-manager/db', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(dataToSave)
-                    });
-                    resolve();
-                } catch (e) { console.error('保存本地数据库失败', e); resolve(); }
-            }, 500);
+    async saveDB(dbData) {
+        // 收集当前调用的 resolve，以便最终保存完成时一起结算
+        const promise = new Promise((resolve) => {
+            this.pendingResolves.push(resolve);
         });
+
+        if (this.saveTimer) clearTimeout(this.saveTimer);
+
+        this.saveTimer = setTimeout(async () => {
+            this.saveTimer = null;
+
+            // 并发锁：如果上一轮保存仍在进行，先等它完成再开始本轮
+            if (this.saveLock) await this.saveLock;
+
+            // 设置本轮互斥锁
+            let lockResolve;
+            this.saveLock = new Promise((r) => { lockResolve = r; });
+
+            try {
+                // 核心：保存前，剥离所有云端数据，防止把几百MB的云端数据塞进用户本地硬盘
+                let dataToSave = JSON.parse(JSON.stringify(dbData));
+                for (let mId in dataToSave.models.main_models) { if (mId.startsWith('cloud_')) delete dataToSave.models.main_models[mId]; }
+                for (let ctx in dataToSave.contexts) { if (ctx.startsWith('cloud_')) delete dataToSave.contexts[ctx]; }
+                for (let imgKey in dataToSave.images) { if (imgKey.startsWith('cloud_')) delete dataToSave.images[imgKey]; }
+
+                await fetch('/api/prompt-manager/db', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataToSave)
+                });
+
+                // 保存成功：结算所有等待中的 Promise
+                this.pendingResolves.forEach(r => r());
+            } catch (e) {
+                console.error('保存本地数据库失败', e);
+                // 即使失败也要结算，避免调用方永远挂起
+                this.pendingResolves.forEach(r => r());
+            } finally {
+                this.pendingResolves = [];
+                this.saveLock = null;
+                lockResolve();  // 释放互斥锁，让排队等待的下一轮可以继续
+            }
+        }, 500);
+
+        return promise;
     },
 
     async uploadImage(base64Data, filename, subfolder) {

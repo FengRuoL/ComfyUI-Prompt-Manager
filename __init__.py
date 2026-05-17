@@ -18,12 +18,15 @@ from aiohttp import web
 import re
 import io
 import urllib.request
+import logging
 
 # === 路径配置 ===
 NODE_ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB_DIRECTORY = os.path.join(NODE_ROOT, "web", "comfyui")
 DATA_DIR = os.path.join(NODE_ROOT, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+
+logger = logging.getLogger('PromptManager')
 
 # 核心：新型分包存储路径
 DB_FILE = os.path.join(DATA_DIR, "prompt_database.json") # 旧版遗留文件(仅用于数据迁移)
@@ -34,31 +37,31 @@ os.makedirs(CTX_DIR, exist_ok=True)
 BACKUP_DIR = os.path.join(NODE_ROOT, "backup")
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
+# 批量读取节点持久化状态文件
+BATCH_STATE_FILE = os.path.join(DATA_DIR, "batch_states.json")
+
 # ==========================================
 # 核心存储路由器：读取全库与保存分包
 # ==========================================
 def load_full_db():
-    # 1. 自动迁移旧版单体 JSON 数据
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 old_db = json.load(f)
             save_full_db(old_db)
-            os.rename(DB_FILE, DB_FILE + ".bak") # 备份旧库，防止误删
-        except: pass
+            os.rename(DB_FILE, DB_FILE + ".bak") 
+        except Exception as e: logger.warning(f'迁移旧版单体JSON数据失败: {e}')
 
     db = {"models": {"main_models": {}}, "settings": {}, "contexts": {}, "images": {}}
     
-    # 2. 读取基础架构
     if os.path.exists(SYS_FILE):
         try:
             with open(SYS_FILE, 'r', encoding='utf-8') as f:
                 sys_data = json.load(f)
                 db["models"] = sys_data.get("models", {"main_models": {}})
                 db["settings"] = sys_data.get("settings", {})
-        except: pass
+        except Exception as e: logger.warning(f'读取基础架构失败: {e}')
 
-    # 3. 组装碎片化的提示词上下文
     if os.path.exists(CTX_DIR):
         for f in os.listdir(CTX_DIR):
             if f.endswith('.json'):
@@ -66,19 +69,17 @@ def load_full_db():
                 try:
                     with open(os.path.join(CTX_DIR, f), 'r', encoding='utf-8') as cf:
                         cdata = json.load(cf)
-                        # 【Bug修复】：自动抹除无用的幽灵字段 imgCount
                         for item, meta in cdata.get("context", {}).get("metadata", {}).items():
                             if "imgCount" in meta: del meta["imgCount"]
                         
                         db["contexts"][ctx_id] = cdata.get("context", {})
                         db["images"].update(cdata.get("images", {}))
-                except: pass
+                except Exception as e: logger.warning(f'读取上下文文件 {ctx_id} 失败: {e}')
     return db
 
 def save_full_db(db):
     os.makedirs(CTX_DIR, exist_ok=True)
     
-    # 1. 保存基础架构到 system.json
     sys_data = {"models": db.get("models", {}), "settings": db.get("settings", {})}
     tmp_sys = SYS_FILE + ".tmp"
     with open(tmp_sys, 'w', encoding='utf-8') as f:
@@ -87,9 +88,7 @@ def save_full_db(db):
 
     current_ctxs = set(db.get("contexts", {}).keys())
 
-    # 2. 分发各个模式的数据到独立的 json 文件
     for ctx, ctx_data in db.get("contexts", {}).items():
-        # 【Bug修复】：保存时也抹除无用的幽灵字段 imgCount
         for item, meta in ctx_data.get("metadata", {}).items():
             if "imgCount" in meta: del meta["imgCount"]
 
@@ -102,7 +101,6 @@ def save_full_db(db):
             json.dump(file_data, f, ensure_ascii=False, indent=2)
         os.replace(tmp_ctx, ctx_file)
 
-    # 3. 清理已在前端被删除的模式文件
     for f in os.listdir(CTX_DIR):
         if f.endswith('.json'):
             if f[:-5] not in current_ctxs:
@@ -117,10 +115,9 @@ def get_target_models():
         db = load_full_db()
         models = db.get("models", {}).get("main_models", {})
         for model_id, model_data in models.items():
-            # 【修复1】：放行 fav_cloud_ 隐形收藏库，这样就能导入组合到订阅端了！
             if model_id.startswith('cloud_'): continue 
             choices.append(f"[{model_data.get('name', model_id)}]")
-    except: pass
+    except Exception as e: logger.warning(f'获取目标模型列表失败: {e}')
     return choices if choices else ["未建任何分类_请先创建"]
 
 def get_target_contexts():
@@ -129,7 +126,6 @@ def get_target_contexts():
         db = load_full_db()
         models = db.get("models", {}).get("main_models", {})
         for model_id, model_data in models.items():
-            # 导入三级分类时，必须屏蔽云端和隐形收藏库
             if model_id.startswith('cloud_') or model_id.startswith('fav_cloud_'): continue
             model_name = model_data.get("name", model_id)
             cats = {c.get("id"): c.get("name") for c in model_data.get("categories", [])}
@@ -137,7 +133,7 @@ def get_target_contexts():
                 mode_name = mode_data.get("name", mode_id)
                 cat_name = cats.get(mode_data.get("group", "custom"), "未分类")
                 choices.append(f"[{model_name}] {cat_name} = {mode_name}")
-    except: pass
+    except Exception as e: logger.warning(f'获取目标上下文列表失败: {e}')
     return choices if choices else ["未建任何三级分类_请先创建"]
 
 def get_combo_choices():
@@ -151,7 +147,7 @@ def get_combo_choices():
             for combo in db.get("contexts", {}).get(f"{model_id}_global", {}).get("combos", []):
                 choice_str = f"[{model_name}] {combo.get('name', '未命名组合')}"
                 if choice_str not in choices: choices.append(choice_str)
-    except: pass
+    except Exception as e: logger.warning(f'获取组合选择列表失败: {e}')
     return choices if choices else ["无可用组合_请先创建"]
 
 def get_group_choices():
@@ -165,88 +161,37 @@ def get_group_choices():
             for group in db.get("contexts", {}).get(f"{model_id}_global", {}).get("groups", []):
                 choice_str = f"[{model_name}] {group.get('name', '未命名分组')}"
                 if choice_str not in choices: choices.append(choice_str)
-    except: pass
+    except Exception as e: logger.warning(f'获取分组选择列表失败: {e}')
     return choices if choices else ["无可用分组_请先创建"]
 
 def normalize_prompt_name(name):
     if not name: return name
-    # 修复：移除所有破坏性的强制格式转换，100%原样保留反斜杠和空格，仅去除首尾多余换行符
     return name.strip()
 
 # ==========================================
-# 节点 1：Prompt 浏览器 
+# 节点 1-6 (原有节点保持不变)
 # ==========================================
 class PromptBrowserNode:
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "输入prompt": ("STRING", {"multiline": True, "default": ""}),
-                "自动随机抽取": ("BOOLEAN", {"default": False}),
-                "抽取数量": ("INT", {"default": 3, "min": 1, "max": 100, "step": 1}),
-            }
-        }
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("prompt字符串",)
-    FUNCTION = "process"
-    CATEGORY = "Prompt Manager"
+    def INPUT_TYPES(cls): return {"required": {"输入prompt": ("STRING", {"multiline": True, "default": ""}), "自动随机抽取": ("BOOLEAN", {"default": False}), "抽取数量": ("INT", {"default": 3, "min": 1, "max": 100, "step": 1})}}
+    RETURN_TYPES = ("STRING",); RETURN_NAMES = ("prompt字符串",); FUNCTION = "process"; CATEGORY = "Prompt Manager"
+    def process(self, 输入prompt, 自动随机抽取, 抽取数量): return (输入prompt,)
 
-    def process(self, 输入prompt, 自动随机抽取, 抽取数量):
-        return (输入prompt,)
-
-# ==========================================
-# 节点 2：Prompt 展示器 (二合一升级版)
-# ==========================================
 class PromptViewerNode:
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "prompt字符串": ("STRING", {"forceInput": True}),
-            },
-            "optional": {
-                "组合预览图": ("IMAGE", )
-            }
-        }
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("prompt字符串",)
-    FUNCTION = "view"
-    OUTPUT_NODE = True
-    CATEGORY = "Prompt Manager"
+    def INPUT_TYPES(cls): return {"required": {"prompt字符串": ("STRING", {"forceInput": True})}, "optional": {"组合预览图": ("IMAGE", )}}
+    RETURN_TYPES = ("STRING",); RETURN_NAMES = ("prompt字符串",); FUNCTION = "view"; OUTPUT_NODE = True; CATEGORY = "Prompt Manager"
+    def view(self, prompt字符串, 组合预览图=None): return {"ui": {"text": [prompt字符串]}, "result": (prompt字符串,)}
 
-    def view(self, prompt字符串, 组合预览图=None):
-        # 实际的图像拉取由前端 JS 根据连线溯源完成，这里只负责透传字符串
-        return {"ui": {"text": [prompt字符串]}, "result": (prompt字符串,)}
-
-# ==========================================
-# 节点 3：Prompt 一键导入 
-# ==========================================
 class PromptImportNode:
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "图像": ("IMAGE",),
-                "prompt字符串": ("STRING", {"forceInput": True}),
-                "导入到三级分类": ("BOOLEAN", {"default": True}),
-                "目标三级分类": (get_target_contexts(), ),
-                "导入到组合预设": ("BOOLEAN", {"default": False}),
-                "目标一级分类": (get_target_models(), ),
-                "压缩率": ("FLOAT", {"default": 0.85, "min": 0.1, "max": 1.0, "step": 0.01}),
-                "最大宽度": ("INT", {"default": 900, "min": 100, "max": 4096, "step": 10}),
-            }
-        }
-    RETURN_TYPES = ()
-    FUNCTION = "save_images"
-    OUTPUT_NODE = True
-    CATEGORY = "Prompt Manager"
+    def INPUT_TYPES(cls): return {"required": {"图像": ("IMAGE",), "prompt字符串": ("STRING", {"forceInput": True}), "导入到三级分类": ("BOOLEAN", {"default": True}), "目标三级分类": (get_target_contexts(), ), "导入到组合预设": ("BOOLEAN", {"default": False}), "目标一级分类": (get_target_models(), ), "压缩率": ("FLOAT", {"default": 0.85, "min": 0.1, "max": 1.0, "step": 0.01}), "最大宽度": ("INT", {"default": 900, "min": 100, "max": 4096, "step": 10})}}
+    RETURN_TYPES = (); FUNCTION = "save_images"; OUTPUT_NODE = True; CATEGORY = "Prompt Manager"
 
     def save_images(self, 图像, prompt字符串, 导入到三级分类, 目标三级分类, 导入到组合预设, 目标一级分类, 压缩率, 最大宽度):
-        # 【修复2】：彻底解耦分类与组合的路径判定逻辑，绝不互相干扰
         if 导入到三级分类 and 导入到组合预设: raise ValueError("【Prompt管理器报错】不能同时导入分类和组合！请只开启其中一个选项。")
         if not 导入到三级分类 and not 导入到组合预设: return () 
 
-        # 核心改造：应用清洗函数，消除格式变体导致的冗余重复
         safe_name = normalize_prompt_name(prompt字符串.strip())
         if not safe_name: return ()
         db_data = load_full_db()
@@ -303,7 +248,6 @@ class PromptImportNode:
             img_key = f"{ctx}_{safe_name}"
             if img_key not in db_data["images"]: db_data["images"][img_key] = []
             db_data["images"][img_key].extend(saved_urls)
-            print(f"[Prompt Manager] 导入分类成功: {safe_name}")
 
         if 导入到组合预设:
             if "combos" not in ctx_data: ctx_data["combos"] = []
@@ -318,45 +262,26 @@ class PromptImportNode:
             combo_name = f"自动组合_{int(time.time())}"
             combo_img = saved_urls[0] if saved_urls else None
             ctx_data["combos"].insert(0, {"name": combo_name, "elements": elements, "image": combo_img})
-            print(f"[Prompt Manager] 导入组合成功: {combo_name}")
         
         save_full_db(db_data)
         return ()
 
-# ==========================================
-# 节点 4：Prompt组合预设加载器
-# ==========================================
 class PromptComboLoaderNode:
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "选择组合": ("STRING", {"default": ""}),
-                "combo_prompt": ("STRING", {"default": ""}),
-                "combo_image": ("STRING", {"default": ""})
-            }
-        }
-    RETURN_TYPES = ("STRING", "IMAGE")
-    RETURN_NAMES = ("prompt字符串", "组合预览图")
-    FUNCTION = "load_combo"
-    CATEGORY = "Prompt Manager"
+    def INPUT_TYPES(cls): return {"required": {"选择组合": ("STRING", {"default": ""}), "combo_prompt": ("STRING", {"default": ""}), "combo_image": ("STRING", {"default": ""})}}
+    RETURN_TYPES = ("STRING", "IMAGE"); RETURN_NAMES = ("prompt字符串", "组合预览图"); FUNCTION = "load_combo"; CATEGORY = "Prompt Manager"
 
     def load_combo(self, 选择组合, combo_prompt, combo_image):
         img_tensor = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-        
         if combo_image:
             try:
                 i = None
                 if combo_image.startswith("/prompt_data/"):
-                    # 加载本地预览图
                     img_path = os.path.join(DATA_DIR, combo_image.replace("/prompt_data/", ""))
-                    if os.path.exists(img_path):
-                        i = Image.open(img_path)
+                    if os.path.exists(img_path): i = Image.open(img_path)
                 elif combo_image.startswith("http"):
-                    # 动态加载在线云端库预览图
                     req = urllib.request.Request(combo_image, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req) as response:
-                        i = Image.open(io.BytesIO(response.read()))
+                    with urllib.request.urlopen(req) as response: i = Image.open(io.BytesIO(response.read()))
                 elif combo_image.startswith("data:image"):
                     header, encoded = combo_image.split(",", 1)
                     i = Image.open(io.BytesIO(base64.b64decode(encoded)))
@@ -365,68 +290,175 @@ class PromptComboLoaderNode:
                     i = i.convert("RGB")
                     img_np = np.array(i).astype(np.float32) / 255.0
                     img_tensor = torch.from_numpy(img_np).unsqueeze(0)
-            except Exception as e:
-                print(f"[Prompt Manager] 加载组合图片失败: {e}")
-
+            except Exception as e: print(f"[Prompt Manager] 加载组合图片失败: {e}")
         return (combo_prompt, img_tensor)
 
-# ==========================================
-# 节点 5 & 6
-# ==========================================
 class PromptGroupRandomizerNode:
     @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"选择分组": (get_group_choices(), ), "抽取数量": ("INT", {"default": 3, "min": 1, "max": 100}), "输入prompt": ("STRING", {"multiline": True, "default": ""})}}
+    def INPUT_TYPES(cls): return {"required": {"选择分组": (get_group_choices(), ), "抽取数量": ("INT", {"default": 3, "min": 1, "max": 100}), "输入prompt": ("STRING", {"multiline": True, "default": ""})}}
     RETURN_TYPES = ("STRING",); RETURN_NAMES = ("prompt字符串",); FUNCTION = "process"; CATEGORY = "Prompt Manager"
     def process(self, 选择分组, 抽取数量, 输入prompt): return (输入prompt,)
 
 class PromptBatchReaderNode:
-    # 使用字典记录每个不同内容的运行进度，防止多节点互相污染
-    _states = {}
+    _states = None
+    @classmethod
+    def _load_states(cls):
+        if os.path.exists(BATCH_STATE_FILE):
+            try:
+                with open(BATCH_STATE_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+            except Exception: pass
+        return {}
+    @classmethod
+    def _save_states(cls):
+        tmp_file = BATCH_STATE_FILE + ".tmp"
+        try:
+            with open(tmp_file, 'w', encoding='utf-8') as f: json.dump(cls._states, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, BATCH_STATE_FILE)
+        except Exception: pass
 
+    @classmethod
+    def INPUT_TYPES(cls): return {"required": {"批量列表_每行一个": ("STRING", {"multiline": True, "default": "@satou_kibi\n@wagashi"}), "固定前缀": ("STRING", {"multiline": True, "default": "masterpiece, best quality, "}), "固定后缀": ("STRING", {"multiline": True, "default": ", cowboy shot"}), "reset_timestamp": ("STRING", {"default": ""})}}
+    RETURN_TYPES = ("STRING", "STRING"); RETURN_NAMES = ("发送给采样器的Prompt", "原始名称"); FUNCTION = "process"; CATEGORY = "Prompt Manager"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs): return float("NaN") 
+
+    def process(self, 批量列表_每行一个, 固定前缀, 固定后缀, reset_timestamp):
+        if PromptBatchReaderNode._states is None: PromptBatchReaderNode._states = PromptBatchReaderNode._load_states()
+        state_key = reset_timestamp if reset_timestamp else "default_state"
+        if state_key not in PromptBatchReaderNode._states: PromptBatchReaderNode._states[state_key] = 0
+            
+        lines = [line.strip() for line in 批量列表_每行一个.strip().split('\n') if line.strip()]
+        if not lines: return {"ui": {"progress": [0, "空数据"]}, "result": (f"{固定前缀}{固定后缀}", "空数据")}
+        
+        current_idx = PromptBatchReaderNode._states[state_key] % len(lines)
+        raw_name = lines[current_idx]
+        PromptBatchReaderNode._states[state_key] += 1
+        PromptBatchReaderNode._save_states()
+        
+        return {"ui": {"progress": [current_idx + 1, raw_name]}, "result": (f"{固定前缀}{raw_name}{固定后缀}", raw_name)}
+
+# ==========================================
+# 节点 7：新增的“本地数据集一键导入”节点
+# ==========================================
+class PromptDatasetImporterNode:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "批量列表_每行一个": ("STRING", {"multiline": True, "default": "@satou_kibi\n@wagashi"}),
-                "固定前缀": ("STRING", {"multiline": True, "default": "masterpiece, best quality, score_9, newest, highres, 1girl, solo, "}),
-                "固定后缀": ("STRING", {"multiline": True, "default": ", cowboy shot, looking at viewer"}),
-                # 新增隐藏参数接收前端传来的重置时间戳，彻底干掉手动开关
-                "reset_timestamp": ("STRING", {"default": ""}) 
+                "txt文件绝对路径": ("STRING", {"default": "D:\\artists.txt"}),
+                "图片根目录绝对路径": ("STRING", {"default": "D:\\images"}),
+                "目标一级分类": (get_target_models(), ),
+                "新建三级分类名称": ("STRING", {"default": "1000画师合集"}),
+                "最大图片尺寸": ("INT", {"default": 512, "min": 128, "max": 2048, "step": 64}),
+                "压缩率": ("FLOAT", {"default": 0.85, "min": 0.1, "max": 1.0, "step": 0.01}),
             }
         }
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("发送给采样器的Prompt", "原始名称(连给一键导入)")
-    FUNCTION = "process"
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("执行结果",)
+    FUNCTION = "import_dataset"
+    OUTPUT_NODE = True
     CATEGORY = "Prompt Manager"
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("NaN") 
+    def import_dataset(self, txt文件绝对路径, 图片根目录绝对路径, 目标一级分类, 新建三级分类名称, 最大图片尺寸, 压缩率):
+        txt文件绝对路径 = txt文件绝对路径.strip('\"').strip('\'')
+        图片根目录绝对路径 = 图片根目录绝对路径.strip('\"').strip('\'')
 
-    def process(self, 批量列表_每行一个, 固定前缀, 固定后缀, reset_timestamp):
-        # 使用 reset_timestamp 作为当前状态的唯一 Key（如果没有则用 default）
-        state_key = reset_timestamp if reset_timestamp else "default_state"
+        if not os.path.exists(txt文件绝对路径):
+            return (f"【失败】找不到 txt 文件: {txt文件绝对路径}，请检查路径是否正确。",)
+        if not os.path.exists(图片根目录绝对路径):
+            return (f"【失败】找不到图片目录: {图片根目录绝对路径}，请检查路径是否正确。",)
+
+        try:
+            with open(txt文件绝对路径, 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+        except Exception as e:
+            return (f"【失败】读取 txt 文件出错: {str(e)}",)
+
+        if not lines:
+            return ("【失败】txt 文件是空的！",)
+
+        db_data = load_full_db()
+        models = db_data.get("models", {}).get("main_models", {})
         
-        # 初始化该节点的进度
-        if state_key not in self._states:
-            self._states[state_key] = 0
+        m_id = None
+        for k, v in models.items():
+            if f"[{v.get('name', k)}]" == 目标一级分类:
+                m_id = k
+                break
+        
+        if not m_id:
+            return ("【失败】未找到目标一级分类，请确保已在界面左侧新建至少一个分类。",)
+
+        # 1. 自动注册新的三级分类
+        md_id = f"import_{int(time.time())}"
+        if "modes" not in models[m_id]: models[m_id]["modes"] = {}
+        models[m_id]["modes"][md_id] = {"name": 新建三级分类名称, "group": "custom"}
+        
+        # 2. 准备上下文环境
+        ctx = f"{m_id}_{md_id}"
+        db_data["contexts"][ctx] = {"items": [], "metadata": {}, "groups": [], "combos": []}
+        ctx_data = db_data["contexts"][ctx]
+        
+        # 3. 创建物理文件夹
+        target_dir = os.path.join(DATA_DIR, ctx)
+        os.makedirs(target_dir, exist_ok=True)
+
+        successful_imgs_count = 0
+        
+        print(f"\n[Prompt Manager] 开始处理大数据集导入，共 {len(lines)} 行...")
+
+        for i, artist_prompt in enumerate(lines):
+            safe_name = normalize_prompt_name(artist_prompt)
+            if not safe_name: continue
             
-        lines = [line.strip() for line in 批量列表_每行一个.strip().split('\n') if line.strip()]
-        if not lines: 
-            return {"ui": {"progress": [0, "空数据"]}, "result": (f"{固定前缀}{固定后缀}", "空数据")}
+            # 找到对应的文件夹：1, 2, 3...
+            folder_num = str(i + 1)
+            folder_path = os.path.join(图片根目录绝对路径, folder_num)
+            
+            saved_urls = []
+            if os.path.exists(folder_path) and os.path.isdir(folder_path):
+                valid_exts = {".jpg", ".jpeg", ".png", ".webp"}
+                for filename in os.listdir(folder_path):
+                    if os.path.splitext(filename)[1].lower() in valid_exts:
+                        img_path = os.path.join(folder_path, filename)
+                        try:
+                            with Image.open(img_path) as img:
+                                if img.mode in ("RGBA", "P"): img = img.convert("RGB")
+                                w, h = img.size
+                                # 等比缩放
+                                if w > 最大图片尺寸 or h > 最大图片尺寸:
+                                    resample_filter = getattr(Image.Resampling, 'LANCZOS', getattr(Image, 'LANCZOS', 1)) if hasattr(Image, 'Resampling') else getattr(Image, 'LANCZOS', 1)
+                                    img.thumbnail((最大图片尺寸, 最大图片尺寸), resample_filter)
+                                
+                                # 生成防碰撞安全文件名
+                                file_safe_name = "".join([c for c in safe_name if c.isalnum()]).rstrip()[:10]
+                                img_name = f"ds_{file_safe_name}_{i}_{torch.randint(0, 10000, (1,)).item()}.jpg"
+                                save_path = os.path.join(target_dir, img_name)
+                                
+                                img.save(save_path, format="JPEG", quality=int(压缩率 * 100))
+                                saved_urls.append(f"/prompt_data/{ctx}/{img_name}")
+                        except Exception as e:
+                            logger.warning(f"图片处理跳过 {img_path}: {e}")
+
+            # 写入数据库映射
+            if safe_name not in ctx_data["items"]:
+                ctx_data["items"].append(safe_name)
+                ctx_data["metadata"][safe_name] = {"tags": ["批量导入数据集"]}
+            
+            if saved_urls:
+                img_key = f"{ctx}_{safe_name}"
+                if img_key not in db_data["images"]: db_data["images"][img_key] = []
+                db_data["images"][img_key].extend(saved_urls)
+                successful_imgs_count += len(saved_urls)
+                
+        # 整体保存一次
+        save_full_db(db_data)
         
-        # 按索引取值
-        current_idx = self._states[state_key] % len(lines)
-        raw_name = lines[current_idx]
-        
-        # 进度 + 1
-        self._states[state_key] += 1
-        
-        final_prompt = f"{固定前缀}{raw_name}{固定后缀}"
-        print(f"[挂机进度] 当前生成: {current_idx + 1}/{len(lines)} -> {raw_name}")
-        
-        return {"ui": {"progress": [current_idx + 1, raw_name]}, "result": (final_prompt, raw_name)}
+        result_msg = f"【成功】已将 {len(lines)} 个画师串全部导入！\n存入分类：{新建三级分类名称}\n共成功提取并压缩了 {successful_imgs_count} 张预览图。"
+        print(f"[Prompt Manager] {result_msg}")
+        return (result_msg,)
+
 # ==========================================
 # 路由映射
 # ==========================================
@@ -438,17 +470,14 @@ async def serve_data_dir(request):
     return web.Response(status=404)
 
 @server.PromptServer.instance.routes.get("/api/prompt-manager/db")
-async def get_db(request):
-    return web.json_response(load_full_db())
+async def get_db(request): return web.json_response(load_full_db())
 
 @server.PromptServer.instance.routes.post("/api/prompt-manager/db")
 async def save_db(request):
     try:
-        data = await request.json()
-        save_full_db(data)
+        save_full_db(await request.json())
         return web.json_response({"success": True})
-    except Exception as e: 
-        return web.json_response({"success": False, "error": str(e)})
+    except Exception as e: return web.json_response({"success": False, "error": str(e)})
 
 @server.PromptServer.instance.routes.post("/api/prompt-manager/upload")
 async def upload_image(request):
@@ -467,7 +496,6 @@ async def upload_image(request):
                 target_dir = os.path.join(DATA_DIR, safe_subfolder)
                 os.makedirs(target_dir, exist_ok=True)
             
-            # 安全修复：抹除潜在的路径穿越符(如 ../)，彻底将字符串限制为纯文件名，不限制后缀名
             safe_filename = os.path.basename(filename)
             filepath = os.path.join(target_dir, safe_filename)
             with open(filepath, "wb") as f: f.write(img_data)
@@ -480,8 +508,7 @@ async def upload_image(request):
 @server.PromptServer.instance.routes.post("/api/prompt-manager/delete_file")
 async def delete_file(request):
     try:
-        data = await request.json()
-        file_url = data.get("url")
+        file_url = (await request.json()).get("url")
         if file_url and file_url.startswith("/prompt_data/"):
             relative_path = file_url.replace("/prompt_data/", "")
             if ".." in relative_path: return web.json_response({"success": False})
@@ -494,8 +521,7 @@ async def delete_file(request):
 @server.PromptServer.instance.routes.post("/api/prompt-manager/delete_folder")
 async def delete_folder(request):
     try:
-        data = await request.json()
-        folder = data.get("folder")
+        folder = (await request.json()).get("folder")
         if folder:
             safe_folder = "".join([c for c in folder if c.isalnum() or '\u4e00' <= c <= '\u9fff' or c in ('_', '-')])
             folder_path = os.path.join(DATA_DIR, safe_folder)
@@ -518,8 +544,7 @@ async def format_plugin(request):
 @server.PromptServer.instance.routes.post("/api/prompt-manager/backup/create")
 async def create_backup(request):
     try:
-        data = await request.json()
-        name = data.get("name", f"Backup_{int(time.time())}")
+        name = (await request.json()).get("name", f"Backup_{int(time.time())}")
         safe_name = "".join([c for c in name if c.isalnum() or '\u4e00' <= c <= '\u9fff' or c in ('_', '-')])
         zip_filename = f"{safe_name}.zip"
         zip_path = os.path.join(BACKUP_DIR, zip_filename)
@@ -550,13 +575,11 @@ async def list_backups(request):
 @server.PromptServer.instance.routes.post("/api/prompt-manager/backup/restore")
 async def restore_backup(request):
     try:
-        data = await request.json()
-        filename = data.get("filename")
+        filename = (await request.json()).get("filename")
         if not filename or ".." in filename: return web.json_response({"success": False})
         zip_path = os.path.join(BACKUP_DIR, filename)
         if not os.path.exists(zip_path): return web.json_response({"success": False, "error": "Backup file not found"})
         
-        # 安全修复：原子化恢复。先解压到临时目录，成功后再无缝替换，避免 ZIP 损坏导致全库清空
         temp_dir = DATA_DIR + "_temp_restore"
         if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
@@ -567,7 +590,6 @@ async def restore_backup(request):
                     if '..' not in member and not os.path.isabs(member):
                         zipf.extract(member, temp_dir)
             
-            # 走到这里说明解压成功，执行安全替换
             for item in os.listdir(DATA_DIR):
                 item_path = os.path.join(DATA_DIR, item)
                 if os.path.isfile(item_path): os.remove(item_path)
@@ -590,7 +612,8 @@ NODE_CLASS_MAPPINGS = {
     "PromptImportNode": PromptImportNode,
     "PromptComboLoaderNode": PromptComboLoaderNode,
     "PromptGroupRandomizerNode": PromptGroupRandomizerNode,
-    "PromptBatchReaderNode": PromptBatchReaderNode  # <--- 新增这行
+    "PromptBatchReaderNode": PromptBatchReaderNode,
+    "PromptDatasetImporterNode": PromptDatasetImporterNode # <--- 注册新节点
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptBrowserNode": "Prompt浏览器", 
@@ -598,5 +621,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptImportNode": "Prompt一键导入",
     "PromptComboLoaderNode": "Prompt组合预设加载器",
     "PromptGroupRandomizerNode": "Prompt收藏夹盲盒",
-    "PromptBatchReaderNode": "Prompt批量读取"
+    "PromptBatchReaderNode": "Prompt批量读取",
+    "PromptDatasetImporterNode": "Prompt本地数据集导入" # <--- 注册中文名
 }

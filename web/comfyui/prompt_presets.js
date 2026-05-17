@@ -123,7 +123,7 @@ window.PM_Global.ui.openGroupsModal = async function() {
         div.innerHTML = `
             <div style="display:flex; align-items:center; justify-content:center; padding-right:15px; color:#555; cursor:grab; font-size:18px;" title="拖拽排序">☰</div>
             <div style="flex:1;">
-                <b style="color:#ff6b9d; font-size:16px;">${g.name}</b>
+                <b style="color:#ff6b9d; font-size:16px;">${UTILS.escapeHTML(g.name)}</b>
                 <div style="color:#888; font-size:12px; margin-top:5px;">包含 ${g.items.length} 张卡片</div>
             </div>
             <div style="display:flex; gap:8px;">
@@ -197,14 +197,16 @@ window.PM_Global.ui.openGroupDetail = function(idx, ctx) {
             card.classList.add("in-prompt");
         }
         
-        let imgHtml = imgList.length > 0 ? `<img src="${imgList[0]}">` : `<div class="pm-no-img">暂无图片</div>`;
+let imgHtml = imgList.length > 0 ? `<img src="${UTILS.escapeHTML(imgList[0])}">` : `<div class="pm-no-img">暂无图片</div>`;
+        const safeItem = UTILS.escapeHTML(item);
+        const safeItemForEvent = encodeURIComponent(item);
         card.innerHTML = `
             <div class="pm-card-img-wrap" style="cursor:pointer;">
                 ${imgHtml}
             </div>
-            <div class="pm-card-title">${item}</div>
+            <div class="pm-card-title">${safeItem}</div>
             <div class="pm-card-actions" style="justify-content:center; padding-top:6px;">
-                <button class="pm-text-btn danger" onclick="event.stopPropagation(); PM_Global.ui.removeCardFromGroup(${idx}, '${item}', '${ctx}')">移出该分组</button>
+                <button class="pm-text-btn danger" onclick="event.stopPropagation(); PM_Global.ui.removeCardFromGroup(${idx}, decodeURIComponent('${safeItemForEvent}'), '${ctx}')">移出该分组</button>
             </div>
         `;
         
@@ -377,16 +379,18 @@ window.PM_Global.ui.openCombosModal = async function() {
             }
         };
 
-        const imgUrl = c.image ? c.image : ''; // 移除时间戳
-        const imgHtml = c.image ? `<img src="${imgUrl}" style="width:100px; height:100px; object-fit:cover; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-viewer-img').src='${imgUrl}'; pmShowModal('pm-image-viewer');">` : `<div style="width:100px; height:100px; background:#222; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#444; font-size:12px;">无预览图</div>`;
+const imgUrl = c.image ? c.image : ''; // 移除时间戳
+        const safeImgUrl = UTILS.escapeHTML(imgUrl);
+        const safeImgUrlForEvent = encodeURIComponent(imgUrl);
+        const imgHtml = c.image ? `<img src="${safeImgUrl}" style="width:100px; height:100px; object-fit:cover; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-viewer-img').src=decodeURIComponent('${safeImgUrlForEvent}'); pmShowModal('pm-image-viewer');">` : `<div style="width:100px; height:100px; background:#222; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#444; font-size:12px;">无预览图</div>`;
         const promptStr = c.elements.map(e => e.weight != 1 ? `(${e.tag}:${e.weight})` : e.tag).join(', ');
 
         div.innerHTML = `
             <div style="display:flex; align-items:center; justify-content:center; padding-right:5px; color:#555; cursor:grab; font-size:18px;" title="拖拽排序">☰</div>
             ${imgHtml}
             <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
-                <b style="color:#ff6b9d; font-size:16px; margin-bottom:5px;">${c.name}</b>
-                <div style="color:#888; font-size:12px; line-height:1.4; max-height:40px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">${promptStr || '暂无标签...'}</div>
+                <b style="color:#ff6b9d; font-size:16px; margin-bottom:5px;">${UTILS.escapeHTML(c.name)}</b>
+                <div style="color:#888; font-size:12px; line-height:1.4; max-height:40px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">${UTILS.escapeHTML(promptStr) || '暂无标签...'}</div>
             </div>
             <div style="display:flex; flex-direction:column; justify-content:center; gap:8px; min-width:110px;">
                 <button class="pm-action-btn" style="color:#fff; padding:6px 10px; font-size:12px;" onclick="PM_Global.ui.exportComboToBrowser(${idx}, '${ctx}')">导至节点</button>
@@ -441,16 +445,16 @@ window.PM_Global.ui.openComboEditModal = function(idx, ctx) {
         `;
     } else {
         header.innerHTML = `
-            <b style="color:#ff6b9d;">编辑组合: ${c.name}</b>
+            <b style="color:#ff6b9d;">编辑组合: ${UTILS.escapeHTML(c.name)}</b>
             <button class="pm-close-btn" onclick="pmHideModal('pm-combo-edit-modal')">返回</button>
         `;
     }
 
     const imgUrl = c.image ? c.image : ''; // 移除时间戳
-    let imgArea = c.image ? `<img src="${imgUrl}" style="width:100%; height:200px; object-fit:contain; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-hidden-combo-img').click()">` : `<div style="width:100%; height:200px; background:#111; border:1px dashed #444; border-radius:8px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#777;" onclick="document.getElementById('pm-hidden-combo-img').click()">点击上传预览图</div>`;
+    let imgArea = c.image ? `<img src="${UTILS.escapeHTML(imgUrl)}" style="width:100%; height:200px; object-fit:contain; border-radius:8px; cursor:pointer;" onclick="document.getElementById('pm-hidden-combo-img').click()">` : `<div style="width:100%; height:200px; background:#111; border:1px dashed #444; border-radius:8px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:#777;" onclick="document.getElementById('pm-hidden-combo-img').click()">点击上传预览图</div>`;
 
-    // 核心保护：把双引号转义为 &quot; 防止切断 HTML 的 value=""
-    const safeName = c.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    // 核心保护：把特殊字符转义防止切断 HTML 属性
+    const safeName = UTILS.escapeHTML(c.name);
     document.getElementById("pm-cedit-content").innerHTML = `
         <input type="text" class="pm-search-input" style="width:100%; margin-bottom:15px; font-weight:bold; font-size:14px;" value="${safeName}" onchange="PM_Global.ui.updateComboName(${idx}, '${ctx}', this.value)">
         ${imgArea}
@@ -466,7 +470,7 @@ window.PM_Global.ui.openComboEditModal = function(idx, ctx) {
     if (c.elements.length === 0) elContainer.innerHTML = `<div style="color:#555; text-align:center;">暂无标签，请添加。</div>`;
     c.elements.forEach((el, elIdx) => {
         const elDiv = document.createElement("div"); elDiv.style.display = "flex"; elDiv.style.gap = "8px"; elDiv.style.marginBottom = "8px";
-        const safeTag = el.tag.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        const safeTag = UTILS.escapeHTML(el.tag);
         elDiv.innerHTML = `
             <input type="text" class="pm-search-input" style="flex:3; padding:6px 10px;" value="${safeTag}" onchange="PM_Global.ui.updateComboEl(${idx}, ${elIdx}, 'tag', this.value, '${ctx}')">
             <input type="number" step="0.1" class="pm-search-input" style="flex:1; padding:6px 10px;" value="${el.weight || 1}" onchange="PM_Global.ui.updateComboEl(${idx}, ${elIdx}, 'weight', this.value, '${ctx}')">
@@ -721,8 +725,8 @@ app.registerExtension({
 
                     if (!targetGroup || !targetGroup.items || targetGroup.items.length === 0) return alert(`分组 [${g_name}] 内没有任何卡片，无法抽取！`);
 
-                    const count = Math.min(targetGroup.items.length, countWidget.value);
-                    const shuffled = [...targetGroup.items].sort(() => 0.5 - Math.random());
+const count = Math.min(targetGroup.items.length, countWidget.value);
+                    const shuffled = UTILS.pmShuffle(targetGroup.items);
                     const selected = shuffled.slice(0, count);
 
                     const newParsed = selected.map(tag => ({ original: tag, tag: tag, weight: 1.0, enabled: true }));

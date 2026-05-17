@@ -18,6 +18,12 @@ const STATE = window.PM_Global.state;
 const UTILS = window.PM_Global.utils;
 const UI = window.PM_Global.ui;
 
+// Shared HTML escaping utility - prevents XSS when interpolating user data into innerHTML
+UTILS.escapeHTML = function(str) {
+    if (!str) return '';
+    return String(str).replace(/[&<>'"]/g, tag => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', "'": '&#39;', '"': '&quot;'}[tag] || tag));
+};
+
 window.PM_Global.ui.openNativeBrowser = openNativeBrowser;
 window.PM_Global.ui.renderGrid = renderGrid;
 
@@ -118,7 +124,7 @@ window.PM_Global.ui.openGroupSelectModal = async function(item, ctx) { // 注意
         const div = document.createElement("div"); div.className = "pm-list-item";
         // 核心保护：对 item 进行 URL 编码，避免单引号切断 onclick
         const safeItemForEvent = encodeURIComponent(item);
-        const safeGroupName = g.name.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const safeGroupName = UTILS.escapeHTML(g.name);
         div.innerHTML = `
             <label style="cursor:pointer; display:flex; align-items:center; gap:10px;">
                 <input type="checkbox" ${has?'checked':''} onchange="PM_Global.ui.toggleGroupItem(${idx}, decodeURIComponent('${safeItemForEvent}'), '${globalCtx}', this.checked)">
@@ -291,7 +297,6 @@ window.PM_Global.ui.openBatchEditModal = function() {
     const sel = document.getElementById('pm-batch-group-select');
     sel.innerHTML = '';
     
-    // 修复 Bug 3：向全局上下文去索取分组列表
     const globalCtx = `${STATE.currentModelId}_global`;
     const groups = STATE.localDB.contexts[globalCtx]?.groups || [];
     
@@ -303,18 +308,108 @@ window.PM_Global.ui.openBatchEditModal = function() {
             opt.value = g.name; opt.innerText = g.name; sel.appendChild(opt);
         });
     }
+
+    // 构建迁移目标列表 (屏蔽云端库)
+    const migSel = document.getElementById('pm-batch-migrate-select');
+    migSel.innerHTML = '';
+    const models = STATE.localDB.models.main_models;
+    let hasTarget = false;
+    for (const [mId, mData] of Object.entries(models)) {
+        if (mId.startsWith('cloud_') || mId.startsWith('fav_cloud_')) continue;
+        const mName = mData.name || mId;
+        const cats = {};
+        (mData.categories || []).forEach(c => cats[c.id] = c.name);
+        for (const [modId, modData] of Object.entries(mData.modes || {})) {
+            const cName = cats[modData.group || "custom"] || "未分类";
+            const opt = document.createElement('option');
+            opt.value = `${mId}_${modId}`;
+            opt.innerText = `[${mName}] ${cName} = ${modData.name || modId}`;
+            migSel.appendChild(opt);
+            hasTarget = true;
+        }
+    }
+    if (!hasTarget) migSel.innerHTML = '<option value="">(没有任何可用的本地三级分类)</option>';
+
     window.pmShowModal('pm-batch-edit-modal');
 };
 
 window.PM_Global.ui.onBatchActionChange = function(val) {
     document.getElementById('pm-batch-tag-div').style.display = val.includes('tags') ? 'block' : 'none';
     document.getElementById('pm-batch-group-div').style.display = val.includes('group') ? 'block' : 'none';
+    document.getElementById('pm-batch-migrate-div').style.display = (val === 'migrate') ? 'block' : 'none';
 };
 
 window.PM_Global.ui.executeBatchEdit = async function() {
     const act = document.getElementById('pm-batch-action-select').value;
     
-    if (act === 'add-tags' || act === 'remove-tags') {
+    if (act === 'migrate') {
+        const targetCtx = document.getElementById('pm-batch-migrate-select').value;
+        if (!targetCtx) return alert("没有有效的迁移目标！");
+
+        UI.updateProgress("正在迁移数据...", "移动属性与物理图片文件");
+        let processed = 0;
+        const total = STATE.batchSelection.size;
+
+        try {
+            for (const batchKey of STATE.batchSelection) {
+                const [oldCtx, item] = batchKey.split('||');
+                if (oldCtx === targetCtx) continue; 
+                if (!STATE.localDB.contexts[oldCtx]) continue;
+
+                processed++;
+                UI.updateProgress("正在迁移数据...", `处理中: ${processed} / ${total} (${item})`, Math.round((processed/total)*100));
+
+                const oldData = STATE.localDB.contexts[oldCtx];
+                if (!STATE.localDB.contexts[targetCtx]) STATE.localDB.contexts[targetCtx] = { items: [], metadata: {} };
+                const targetData = STATE.localDB.contexts[targetCtx];
+
+                // 1. 迁移元数据和文本属性
+                if (!targetData.items.includes(item)) targetData.items.push(item);
+                targetData.metadata[item] = oldData.metadata[item] || { tags: [] };
+                
+                oldData.items = oldData.items.filter(x => x !== item);
+                delete oldData.metadata[item];
+
+                // 2. 深度物理搬运图库 (安全抽出后重组)
+                const oldImgKey = `${oldCtx}_${item}`;
+                const newImgKey = `${targetCtx}_${item}`;
+                if (STATE.localDB.images[oldImgKey] && STATE.localDB.images[oldImgKey].length > 0) {
+                    if (!STATE.localDB.images[newImgKey]) STATE.localDB.images[newImgKey] = [];
+                    for (let i = 0; i < STATE.localDB.images[oldImgKey].length; i++) {
+                        const oldUrl = STATE.localDB.images[oldImgKey][i];
+                        try {
+                            const b64 = await UTILS.urlToBase64(oldUrl);
+                            const safeName = "mig_" + UTILS.cyrb53(b64) + ".jpg";
+                            const newUrl = await PromptAPI.uploadImage(b64, safeName, targetCtx);
+                            if (newUrl) {
+                                STATE.localDB.images[newImgKey].push(newUrl);
+                                await PromptAPI.deleteFile(oldUrl); // 安全删除旧文件
+                            } else {
+                                STATE.localDB.images[newImgKey].push(oldUrl); // 备用防丢
+                            }
+                        } catch(e) {
+                            STATE.localDB.images[newImgKey].push(oldUrl); // 备用防丢
+                        }
+                    }
+                    delete STATE.localDB.images[oldImgKey];
+                }
+
+                // 3. 跨一级分类(跨模型)时，自动剥离失效的旧收藏夹分组关联
+                const oldModelId = oldCtx.split('_')[0];
+                const newModelId = targetCtx.split('_')[0];
+                if (oldModelId !== newModelId) {
+                    const globalCtx = `${oldModelId}_global`;
+                    const groups = STATE.localDB.contexts[globalCtx]?.groups || [];
+                    groups.forEach(g => { g.items = g.items.filter(x => x !== item); });
+                }
+            }
+        } catch(e) {
+            alert("迁移过程中遇到部分异常，可能未完全执行完成。");
+        } finally {
+            UI.hideProgress();
+        }
+
+    } else if (act === 'add-tags' || act === 'remove-tags') {
         const tags = document.getElementById('pm-batch-tag-input').value.split(',').map(x => x.trim()).filter(x => x);
         STATE.batchSelection.forEach(batchKey => {
             const [ctx, item] = batchKey.split('||');
@@ -328,13 +423,11 @@ window.PM_Global.ui.executeBatchEdit = async function() {
         const gName = document.getElementById('pm-batch-group-select').value;
         if (!gName) return alert("没有可用的收藏分组！");
         
-        // 修复 Bug 3：将卡片写入到全局上下文中
         const globalCtx = `${STATE.currentModelId}_global`;
         const g = STATE.localDB.contexts[globalCtx]?.groups?.find(x => x.name === gName);
         if (g) {
             STATE.batchSelection.forEach(batchKey => {
                 const [ctx, item] = batchKey.split('||');
-                // 移除 ctx === targetCtx 的限制，因为分组现在是全局的，可以收纳任何模式的卡片
                 if (act === 'add-to-group' && !g.items.includes(item)) g.items.push(item);
                 else if (act === 'remove-from-group') g.items = g.items.filter(x => x !== item);
             });
@@ -692,12 +785,17 @@ function buildAllModals() {
                     <option value="remove-tags">批量移除标签</option>
                     <option value="add-to-group">批量加入收藏分组</option>
                     <option value="remove-from-group">批量移出收藏分组</option>
+                    <option value="migrate">批量迁移卡片</option>
                 </select>
                 <div id="pm-batch-tag-div">
                     <input type="text" id="pm-batch-tag-input" class="pm-search-input" style="width:100%; margin-bottom:15px;" placeholder="输入标签，用逗号分隔">
                 </div>
                 <div id="pm-batch-group-div" style="display:none; margin-bottom:15px;">
                     <select id="pm-batch-group-select" class="pm-scope-select" style="width:100%;"></select>
+                </div>
+                <div id="pm-batch-migrate-div" style="display:none; margin-bottom:15px;">
+                    <p style="font-size:12px; color:#ff6b9d; margin-bottom:8px;">请选择目标三级分类：</p>
+                    <select id="pm-batch-migrate-select" class="pm-scope-select" style="width:100%;"></select>
                 </div>
                 <p style="font-size:12px; color:#888; margin-bottom:20px;">将影响当前选中的 <span id="pm-batch-affect-count" style="color:#ff6b9d; font-weight:bold;">0</span> 个项目。</p>
                 <button class="pm-action-btn primary" style="width:100%; padding:12px; font-size:14px;" onclick="PM_Global.ui.executeBatchEdit()">确认执行</button>
@@ -879,15 +977,17 @@ function bindBrowserEvents(container) {
             if (data.success) {
                 list.innerHTML = "";
                 if (data.backups.length === 0) list.innerHTML = "<div style='color:#666; text-align:center;'>暂无备份</div>";
-                data.backups.forEach(b => {
+data.backups.forEach(b => {
                     const dateStr = new Date(b.time * 1000).toLocaleString();
+                    const safeBName = UTILS.escapeHTML(b.name);
+                    const safeBNameForEvent = encodeURIComponent(b.name);
                     const item = document.createElement("div"); item.className = "pm-list-item"; item.style.padding = "10px";
                     item.innerHTML = `
                         <div>
-                            <div style="color:#ddd; font-weight:bold;">${b.name}</div>
+                            <div style="color:#ddd; font-weight:bold;">${safeBName}</div>
                             <div style="color:#888; font-size:11px;">大小: ${b.size} MB | 时间: ${dateStr}</div>
                         </div>
-                        <button class="pm-text-btn danger" onclick="PM_Global.ui.restoreBackup('${b.name}')">恢复此备份</button>
+                        <button class="pm-text-btn danger" onclick="PM_Global.ui.restoreBackup(decodeURIComponent('${safeBNameForEvent}'))">恢复此备份</button>
                     `;
                     list.appendChild(item);
                 });
@@ -1389,10 +1489,11 @@ function renderGrid() {
 
         // 1. 构建图片区域 HTML
         let imgWrapHtml = '';
-        if (imgList.length > 0) {
+if (imgList.length > 0) {
             const firstImg = imgList[0];
+            const safeFirstImg = UTILS.escapeHTML(firstImg);
             imgWrapHtml = `
-                <img src="${firstImg}" loading="lazy" class="pm-action-target" data-action="view-img" style="cursor:zoom-in;">
+                <img src="${safeFirstImg}" loading="lazy" class="pm-action-target" data-action="view-img" style="cursor:zoom-in;">
                 <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
             `;
             if (imgList.length > 1) {
@@ -1409,7 +1510,7 @@ function renderGrid() {
         const tags = STATE.localDB.contexts[ctx]?.metadata?.[item]?.tags || [];
         let tagsHtml = tags.length === 0 
             ? '<span style="color:#555; font-style:italic;">暂无标签</span>'
-            : tags.map(t => `<span class="pm-tag">${t}</span>`).join('');
+            : tags.map(t => `<span class="pm-tag">${UTILS.escapeHTML(t)}</span>`).join('');
 
         // 3. 构建来源显示 HTML
         let sourceHtml = '';
@@ -1417,19 +1518,16 @@ function renderGrid() {
             const prefix = STATE.currentModelId + "_";
             const modId = ctx.startsWith(prefix) ? ctx.substring(prefix.length) : ctx.split('_').slice(1).join('_');
             const mName = STATE.localDB.models.main_models[STATE.currentModelId]?.modes[modId]?.name || modId;
-            sourceHtml = `<div class="pm-card-source">[${mName}]</div>`;
+            sourceHtml = `<div class="pm-card-source">[${UTILS.escapeHTML(mName)}]</div>`;
         }
 
-        // 注入安全字符转义，防止名字中有双引号破坏 HTML 结构
+// 注入安全字符转义，防止名字中有双引号破坏 HTML 结构
         const safeItem = encodeURIComponent(item);
-        // HTML 实体转义，防止带有 < > ' " 的 Prompt 破坏 DOM 导致后续操作失效
-        const escapeHTML = (str) => str.replace(/[&<>'"]/g, 
-            tag => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'}[tag] || tag));
 
         htmlChunks.push(`
             <div class="${cardClasses}" data-ctx="${ctx}" data-item="${safeItem}">
                 <div class="pm-card-img-wrap" data-img-idx="0">${imgWrapHtml}</div>
-                <div class="pm-card-title">${escapeHTML(item)}</div>
+                <div class="pm-card-title">${UTILS.escapeHTML(item)}</div>
                 ${sourceHtml}
                 <div class="pm-card-tags">${tagsHtml}</div>
                 <div class="pm-card-actions">
@@ -1895,8 +1993,8 @@ app.registerExtension({
                     const countWidget = this.widgets.find(w => w.name === "抽取数量");
                     const desiredCount = countWidget ? countWidget.value : 3;
                     
-                    const count = Math.min(dataItems.length, desiredCount);
-                    const selected = [...dataItems].sort(() => 0.5 - Math.random()).slice(0, count);
+const count = Math.min(dataItems.length, desiredCount);
+                    const selected = UTILS.pmShuffle(dataItems).slice(0, count);
                     
                     const newParsed = selected.map(tag => ({ original: tag, tag: tag, weight: 1.0, enabled: true }));
                     promptWidget.value = UTILS.buildPromptText(newParsed); app.graph.setDirtyCanvas(true); renderList();

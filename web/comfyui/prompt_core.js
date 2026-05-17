@@ -324,10 +324,20 @@ Object.assign(window.PM_Global.utils, {
             if (widget) { widget.options.values = comboChoices; if (!comboChoices.includes(widget.value)) widget.value = comboChoices[0]; }
         });
 
-        app.graph._nodes.filter(n => n.type === "PromptGroupRandomizerNode").forEach(node => {
+app.graph._nodes.filter(n => n.type === "PromptGroupRandomizerNode").forEach(node => {
             const widget = node.widgets?.find(w => w.name === "选择分组");
             if (widget) { widget.options.values = groupChoices; if (!groupChoices.includes(widget.value)) widget.value = groupChoices[0]; }
         });
+    },
+
+    // Fisher-Yates shuffle - unbiased replacement for .sort(() => 0.5 - Math.random())
+    pmShuffle(arr) {
+        const a = [...arr];
+        for (let i = a.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
     }
 });
 
@@ -382,12 +392,66 @@ window.addEventListener("beforeunload", () => {
         for (let ctx in dataToSave.contexts) { if (ctx.startsWith('cloud_')) delete dataToSave.contexts[ctx]; }
         for (let imgKey in dataToSave.images) { if (imgKey.startsWith('cloud_')) delete dataToSave.images[imgKey]; }
         
-        // 灵活修复：使用现代 fetch 并开启 keepalive，突破 64KB 限制，确保页面卸载后请求不中断
-        fetch('/api/prompt-manager/db', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataToSave),
-            keepalive: true
-        }).catch(err => console.warn("后台自动保存失败:", err));
+        const payload = JSON.stringify(dataToSave);
+        const SIZE_LIMIT = 64 * 1024; // 64KB limit for fetch keepalive
+        
+        if (payload.length <= SIZE_LIMIT) {
+            // Small payload: use fetch keepalive as before
+            fetch('/api/prompt-manager/db', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                keepalive: true
+            }).catch(err => console.warn("后台自动保存失败:", err));
+        } else {
+            // Large payload: try localStorage fallback, then warn if it also fails
+            try {
+                localStorage.setItem('pm_pending_save', payload);
+                console.warn(`[Prompt Manager] 数据量 ${payload.length} 字节超过 fetch keepalive 64KB 限制，已暂存至 localStorage。下次页面加载后将自动恢复。`);
+                // Register a recovery listener on next page load
+                window.PM_Global._hasPendingLocalStorageSave = true;
+            } catch (lsErr) {
+                console.error("[Prompt Manager] localStorage 暂存也失败:", lsErr);
+                // User-visible warning: set a flag that will be checked on next init
+                try {
+                    localStorage.setItem('pm_save_failed_flag', '1');
+                } catch(e2) {}
+                // Since beforeunload cannot show alerts, we use console.error and set a marker
+                // that the next page load will display a warning dialog
+                console.error("[Prompt Manager] 页面关闭时自动保存彻底失败！数据可能丢失。请下次打开时注意弹窗警告。");
+            }
+        }
     }
 });
+
+// === 5. 页面加载时恢复 localStorage 暂存数据并显示警告 ===
+(function recoverLocalStorageSave() {
+    // Check for a pending save from a previous beforeunload
+    const pendingData = localStorage.getItem('pm_pending_save');
+    if (pendingData) {
+        try {
+            const data = JSON.parse(pendingData);
+            fetch('/api/prompt-manager/db', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            }).then(() => {
+                localStorage.removeItem('pm_pending_save');
+                console.log("[Prompt Manager] 已成功恢复上次暂存的数据。");
+                alert("[Prompt Manager] 上次关闭页面时数据量过大，已暂存至浏览器本地存储。现已自动恢复保存至服务器，数据安全！");
+            }).catch(err => {
+                console.error("[Prompt Manager] 恢复暂存数据失败:", err);
+                alert("[Prompt Manager] 上次关闭页面时数据暂存至浏览器本地存储，但恢复保存至服务器失败！\n请尝试手动导出数据备份，或按 F12 查看控制台。");
+            });
+        } catch(e) {
+            localStorage.removeItem('pm_pending_save');
+        }
+    }
+
+    // Check for a save failure flag from a previous session
+    const failedFlag = localStorage.getItem('pm_save_failed_flag');
+    if (failedFlag) {
+        localStorage.removeItem('pm_save_failed_flag');
+        alert("[Prompt Manager] 警告：上次关闭页面时自动保存彻底失败，部分数据可能已丢失！\n请检查您的数据完整性，必要时使用备份恢复功能。");
+    }
+})();
