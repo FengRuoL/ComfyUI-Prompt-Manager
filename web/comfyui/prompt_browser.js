@@ -1048,7 +1048,7 @@ window.PM_Global.ui.forceUpdateCloud = async function() {
     UI.updateProgress("正在连接云端...", "穿透缓存获取最新数据，请耐心等待");
     
     try {
-        const CLOUD_BASE_URL = "https://huggingface.co/datasets/FRuoL/ComfyUI-Prompt-CloudDB/raw/main";
+        const CLOUD_BASE_URL = "https://huggingface.co/datasets/FRuoL/ComfyUI-Prompt-CloudDB/resolve/main";
         const t = Date.now(); // 用时间戳强行穿透 GitHub Pages 缓存
         
         // 1. 获取基础架构 system.json
