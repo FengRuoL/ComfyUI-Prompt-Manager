@@ -27,6 +27,11 @@ UTILS.escapeHTML = function(str) {
 window.PM_Global.ui.openNativeBrowser = openNativeBrowser;
 window.PM_Global.ui.renderGrid = renderGrid;
 
+// === 图片加载状态缓存 (跨分类持久，关闭页面自动清除) ===
+// 只存 imgKey 字符串标记，不存图片数据本身，万级素材也只占几十KB内存
+// 渲染时查缓存：已加载过的图直接设 src（浏览器HTTP缓存命中），未加载的走懒加载
+window.PM_Global._imgLoadedCache = window.PM_Global._imgLoadedCache || new Set();
+
 window.switchCreateTab = function(tab) {
     document.querySelectorAll('.pm-ct-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('[id^="ct-content-"]').forEach(c => c.style.display = 'none');
@@ -1048,14 +1053,17 @@ window.PM_Global.ui.forceUpdateCloud = async function() {
     UI.updateProgress("正在连接云端...", "穿透缓存获取最新数据，请耐心等待");
     
     try {
-        const CLOUD_BASE_URL = "https://huggingface.co/datasets/FRuoL/ComfyUI-Prompt-CloudDB/resolve/main";
-        const t = Date.now(); // 用时间戳强行穿透 GitHub Pages 缓存
+        const CLOUD_JSON_URL = "https://hf-mirror.com/datasets/FRuoL/ComfyUI-Prompt-CloudDB/raw/main";
+        const CLOUD_IMG_BASE = "https://hf-mirror.com/datasets/FRuoL/ComfyUI-Prompt-CloudDB/resolve/main/data/";
+        const t = Date.now(); 
         
         // 1. 获取基础架构 system.json
-        const sysRes = await fetch(`${CLOUD_BASE_URL}/data/system.json?t=${t}`);
+        const sysRes = await fetch(`${CLOUD_JSON_URL}/data/system.json?t=${t}`);
         if (!sysRes.ok) throw new Error("无法连接到云端 system.json");
         const sysText = await sysRes.text();
-        const sysJson = JSON.parse(sysText.replace(/\/prompt_data\//g, `${CLOUD_BASE_URL}/data/`));
+        
+        // 剥离 Proxy，让浏览器多线程直接拉取
+        const sysJson = JSON.parse(sysText.replace(/\/prompt_data\//g, CLOUD_IMG_BASE));
         
         let cloudModels = sysJson.models || { main_models: {} };
         let cloudContexts = {};
@@ -1075,10 +1083,10 @@ window.PM_Global.ui.forceUpdateCloud = async function() {
         // 3. 并发下载分包数据
         const fetchCtx = async (ctxId) => {
             try {
-                const res = await fetch(`${CLOUD_BASE_URL}/data/contexts_db/${ctxId}.json?t=${t}`);
+                const res = await fetch(`${CLOUD_JSON_URL}/data/contexts_db/${ctxId}.json?t=${t}`);
                 if (res.ok) {
                     const text = await res.text();
-                    return { id: ctxId, data: JSON.parse(text.replace(/\/prompt_data\//g, `${CLOUD_BASE_URL}/data/`)) };
+                    return { id: ctxId, data: JSON.parse(text.replace(/\/prompt_data\//g, CLOUD_IMG_BASE)) };
                 }
             } catch(err) {}
             return null;
@@ -1492,10 +1500,19 @@ function renderGrid() {
 if (imgList.length > 0) {
             const firstImg = imgList[0];
             const safeFirstImg = UTILS.escapeHTML(firstImg);
-            imgWrapHtml = `
-                <img src="${safeFirstImg}" loading="lazy" class="pm-action-target" data-action="view-img" style="cursor:zoom-in;">
-                <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
-            `;
+            const isCached = window.PM_Global._imgLoadedCache.has(imgKey);
+            // 缓存命中的图直接设 src（浏览器HTTP缓存秒出），未缓存的走懒加载
+            if (isCached) {
+                imgWrapHtml = `
+                    <img src="${safeFirstImg}" class="pm-action-target" data-action="view-img" style="cursor:zoom-in;">
+                    <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
+                `;
+            } else {
+                imgWrapHtml = `
+                    <img src="[screenshot]" data-src="${safeFirstImg}" class="pm-action-target pm-custom-lazy" data-action="view-img" style="cursor:zoom-in;">
+                    <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
+                `;
+            }
             if (imgList.length > 1) {
                 imgWrapHtml += `
                     <button class="pm-nav-arrow left pm-action-target" data-action="prev-img">◀</button>
@@ -1521,7 +1538,7 @@ if (imgList.length > 0) {
             sourceHtml = `<div class="pm-card-source">[${UTILS.escapeHTML(mName)}]</div>`;
         }
 
-// 注入安全字符转义，防止名字中有双引号破坏 HTML 结构
+        // 注入安全字符转义，防止名字中有双引号破坏 HTML 结构
         const safeItem = encodeURIComponent(item);
 
         htmlChunks.push(`
@@ -1548,6 +1565,40 @@ if (imgList.length > 0) {
         main.dataset.delegated = "true";
         main.addEventListener('click', handleGridClick);
     }
+
+// === 懒加载 + 加载状态缓存 ===
+    // 原理：滑到图片时才加载，触发加载后标记到全局缓存 Set，
+    // 切换分类时 DOM 重建但缓存不丢，下次 renderGrid 时缓存命中的图直接设 src（浏览器HTTP缓存秒出）
+    if (window._pmLazyObserver) {
+        window._pmLazyObserver.disconnect();
+    }
+    window._pmLazyObserver = new IntersectionObserver((entries, observer) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const img = entry.target;
+                if (img.dataset.src) {
+                    img.src = img.dataset.src;
+                    img.removeAttribute('data-src');
+                    img.classList.remove('pm-custom-lazy');
+                }
+                // 标记此卡片图片已触发加载，写入全局缓存（跨分类持久，关闭页面自动清除）
+                const card = img.closest('.pm-selectable-card');
+                if (card) {
+                    const cacheKey = `${card.dataset.ctx}_${decodeURIComponent(card.dataset.item)}`;
+                    window.PM_Global._imgLoadedCache.add(cacheKey);
+                }
+                observer.unobserve(img);
+            }
+        });
+    }, {
+        root: main,
+        rootMargin: "300px"
+    });
+
+    // 只为未缓存的懒加载图片注册观察
+    main.querySelectorAll('.pm-custom-lazy').forEach(img => {
+        window._pmLazyObserver.observe(img);
+    });
 }
 
 /* =====================================================================
@@ -1569,9 +1620,10 @@ async function handleGridClick(e) {
         const imgWrap = card.querySelector('.pm-card-img-wrap');
         let currentImgIdx = imgWrap ? parseInt(imgWrap.dataset.imgIdx || "0") : 0;
 
-        if (action === 'view-img' && !STATE.isBatchMode) {
+if (action === 'view-img' && !STATE.isBatchMode) {
             document.getElementById('pm-viewer-img').src = imgList[currentImgIdx];
             window.pmShowModal("pm-image-viewer");
+            window.PM_Global._imgLoadedCache.add(imgKey);
         } else if (action === 'del-img') {
             if (confirm("仅彻底删除当前显示的这张图片？")) {
                 await PromptAPI.deleteFile(imgList[currentImgIdx]); 
@@ -1580,12 +1632,14 @@ async function handleGridClick(e) {
                 await PromptAPI.saveDB(STATE.localDB); 
                 renderGrid();
             }
-        } else if (action === 'prev-img' || action === 'next-img') {
+} else if (action === 'prev-img' || action === 'next-img') {
             currentImgIdx = action === 'prev-img' 
                 ? (currentImgIdx - 1 + imgList.length) % imgList.length 
                 : (currentImgIdx + 1) % imgList.length;
             imgWrap.dataset.imgIdx = currentImgIdx;
             imgWrap.querySelector('img').src = imgList[currentImgIdx];
+            // 翻页后的图也标记缓存，下次 renderGrid 时第一张图就能直接命中
+            window.PM_Global._imgLoadedCache.add(imgKey);
         } else if (action === 'fav') {
             window.PM_Global.ui.openGroupSelectModal(item, ctx);
         } else if (action === 'upload') {
