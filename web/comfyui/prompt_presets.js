@@ -128,6 +128,7 @@ window.PM_Global.ui.openGroupsModal = async function() {
             </div>
             <div style="display:flex; gap:8px;">
                 <button class="pm-action-btn" style="color:#4caf50; border-color:#1e3e1e;" onclick="PM_Global.ui.openGroupDetail(${idx}, '${ctx}')">查看内页</button>
+                <button class="pm-text-btn warning" onclick="PM_Global.ui.renameGroup(${idx}, '${ctx}')">改名</button>
                 <button class="pm-text-btn danger" onclick="PM_Global.ui.deleteGroup(${idx}, '${ctx}')">删除</button>
             </div>
         `;
@@ -142,6 +143,17 @@ window.PM_Global.ui.createNewGroup = async function() {
     if (!val) return alert("请输入名称！");
     getCtxData(ctx).groups.unshift({ name: val, items: [] });
     await PromptAPI.saveDB(STATE.localDB); window.PM_Global.ui.openGroupsModal();
+};
+
+window.PM_Global.ui.renameGroup = async function(idx, ctx) {
+    const g = getCtxData(ctx).groups[idx];
+    const newName = prompt("请输入新的分组名称:", g.name);
+    if (newName && newName.trim() && newName.trim() !== g.name) {
+        g.name = newName.trim();
+        await PromptAPI.saveDB(STATE.localDB);
+        window.PM_Global.ui.openGroupsModal();
+        UTILS.syncImportNodeWidgets(); // 同步到连线节点
+    }
 };
 
 window.PM_Global.ui.deleteGroup = async function(idx, ctx) {
@@ -179,7 +191,8 @@ window.PM_Global.ui.openGroupDetail = function(idx, ctx) {
         activePrompts = UTILS.parsePromptText(STATE.currentActiveWidget.value).map(p => p.tag);
     }
     
-    g.items.forEach(item => {
+    const sortedItems = [...g.items].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+    sortedItems.forEach(item => {
         // 核心修复：图片存在于原卡片的三级分类里，而不是 global 里，需要全局检索此卡片的图片
         let imgList = [];
         for (const realCtx of Object.keys(STATE.localDB.contexts)) {

@@ -622,7 +622,7 @@ function openNativeBrowser() {
                 
                 /* 1.1 新增：控制专属更新按钮的显示与隐藏 */
                 #sect-cloud-ops { display: none; }
-                .is-cloud-mode #sect-cloud-ops { display: block; margin-top: 15px; border-top: 1px dashed rgba(255,107,157,0.3); padding-top: 15px; }
+                .is-cloud-mode #sect-cloud-ops { display: block; }
                 
                 /* 2. 禁止侧边栏分类的拖拽行为 */
                 .is-cloud-mode .pm-cat-wrap,
@@ -758,8 +758,69 @@ function buildAllModals() {
     `;
     document.body.appendChild(backupModal);
 
-    const imgViewer = document.createElement("div"); imgViewer.id = "pm-image-viewer"; imgViewer.className = "pm-modal-overlay"; imgViewer.style.zIndex = "20005";
-    imgViewer.innerHTML = `<img id="pm-viewer-img" src="">`; document.body.appendChild(imgViewer); imgViewer.onclick = () => window.pmHideModal("pm-image-viewer");
+// 【核心增强】：替换为支持缩放和拖拽的高级预览器
+    const imgViewer = document.createElement("div"); 
+    imgViewer.id = "pm-image-viewer"; 
+    imgViewer.className = "pm-modal-overlay"; 
+    imgViewer.style.zIndex = "20005";
+    imgViewer.innerHTML = `
+        <div id="pm-viewer-close" style="position:absolute; top:20px; right:30px; color:#fff; font-size:40px; cursor:pointer; z-index:20006; font-weight:bold; text-shadow: 0 2px 6px rgba(0,0,0,0.8); transition:0.2s;">×</div>
+        <img id="pm-viewer-img" src="" style="transition: transform 0.05s linear; cursor: grab; max-width: 90%; max-height: 90%; object-fit: contain;">
+    `; 
+    document.body.appendChild(imgViewer); 
+
+    // 全局缩放平移状态变量
+    let vScale = 1, vTx = 0, vTy = 0, isVDragging = false, vStartX, vStartY;
+    const vImg = document.getElementById("pm-viewer-img");
+    const vClose = document.getElementById("pm-viewer-close");
+
+    vClose.onclick = () => window.pmHideModal("pm-image-viewer");
+    vClose.onmouseover = () => vClose.style.color = "#ff6b9d";
+    vClose.onmouseout = () => vClose.style.color = "#fff";
+
+    // 点到黑色背景处关闭（如果点到了图片本身，则不关闭，留给拖拽使用）
+    imgViewer.onpointerdown = (e) => {
+        if (e.target === imgViewer) window.pmHideModal("pm-image-viewer");
+    };
+
+    // 监听：每次打开图片时，重置所有缩放和平移状态
+    new MutationObserver((mutations) => {
+        mutations.forEach((m) => {
+            if (m.attributeName === 'style' && imgViewer.style.display === 'flex') {
+                vScale = 1; vTx = 0; vTy = 0;
+                vImg.style.transform = `translate(0px, 0px) scale(1)`;
+            }
+        });
+    }).observe(imgViewer, { attributes: true });
+
+    // 滚轮缩放逻辑
+    imgViewer.addEventListener("wheel", (e) => {
+        e.preventDefault(); // 阻止网页默认滚动
+        const zoomIntensity = 0.15;
+        // 向上滚放大，向下滚缩小
+        vScale *= (e.deltaY < 0) ? (1 + zoomIntensity) : (1 - zoomIntensity);
+        vScale = Math.max(0.1, Math.min(vScale, 15)); // 限制缩放 0.1倍 ~ 15倍
+        vImg.style.transform = `translate(${vTx}px, ${vTy}px) scale(${vScale})`;
+    }, {passive: false});
+
+    // 拖拽平移逻辑
+    vImg.addEventListener("pointerdown", (e) => {
+        e.preventDefault(); 
+        isVDragging = true;
+        vStartX = e.clientX - vTx; 
+        vStartY = e.clientY - vTy;
+        vImg.style.cursor = "grabbing"; // 抓取中的小手图标
+    });
+    window.addEventListener("pointermove", (e) => {
+        if (!isVDragging) return;
+        vTx = e.clientX - vStartX; 
+        vTy = e.clientY - vStartY;
+        vImg.style.transform = `translate(${vTx}px, ${vTy}px) scale(${vScale})`;
+    });
+    window.addEventListener("pointerup", () => {
+        isVDragging = false; 
+        vImg.style.cursor = "grab";
+    });
 
     const progressOverlay = document.createElement("div"); progressOverlay.id = "pm-progress-overlay"; progressOverlay.className = "pm-modal-overlay"; progressOverlay.style.zIndex = "20005";
     progressOverlay.innerHTML = `<div class="pm-progress-wrap"><h3 id="pm-progress-title" style="color:#ff6b9d; margin:0 0 15px 0;">处理中...</h3><div class="pm-progress-bar-container"><div id="pm-progress-fill"></div></div><div id="pm-progress-text" style="font-size:14px; color:#ccc; font-weight:bold;">0%</div></div>`;
@@ -882,11 +943,12 @@ function buildMainContainer() {
                         </div>
                     </div>
                     
-                    <!-- 新增：订阅库专属的更新操作区 -->
+                    <!-- 新增：云端库专属的更新操作区 -->
                     <div id="sect-cloud-ops">
-                        <div class="pm-sidebar-label">订阅库操作</div>
+                        <div class="pm-sidebar-label">云端库操作</div>
+                        <button class="pm-action-btn" style="width:100%; font-weight:bold; color:#ff9800; border-color:#835213; margin-bottom:10px;" onclick="PM_Global.ui.clearCloudCache()">清空云端内存缓存</button>
                         <button class="pm-action-btn primary" style="width:100%; font-weight:bold; border-color:#ff6b9d;" onclick="PM_Global.ui.forceUpdateCloud()">强制拉取最新云端库</button>
-                        <p style="font-size:10px; color:#888; margin-top:8px; line-height:1.4;">提示：这会无视缓存立即下载最新数据，请勿频繁恶意点击以免被 GitHub 官方风控拉黑。</p>
+                        <p style="font-size:10px; color:#888; margin-top:8px; line-height:1.4;">提示：这会无视缓存立即拉取最新数据，请勿频繁恶意点击以免被 GitHub 官方风控。</p>
                     </div>
 
                     <input type="file" id="pm-hidden-import" accept=".json" style="display:none;">
@@ -905,6 +967,7 @@ function buildMainContainer() {
                         <option value="img_first">排序: 有图优先</option>
                         <option value="img_last">排序: 无图优先</option>
                     </select>
+                    <button class="pm-action-btn" id="pm-btn-jump-ping" style="color:#00e5ff; border-color:#008b8b; margin-left:10px; font-weight:bold;" title="快速滚动到上次标记的卡片位置">★ 找回进度</button>
                     <div class="pm-toolbar-right"><span style="font-size:12px; color:#aaa;">尺寸调节</span><input type="range" class="pm-zoom-slider" id="pm-zoom-slider" min="140" max="300" value="180"></div>
                 </div>
                 <div class="pm-main" id="pm-main"><div id="pm-marquee"></div></div>
@@ -959,6 +1022,29 @@ function bindBrowserEvents(container) {
     document.getElementById("pm-search-input").oninput = (e) => { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { STATE.searchQuery = e.target.value.toLowerCase().trim(); renderGrid(); }, 300); };
     document.getElementById("pm-search-scope").onchange = (e) => { STATE.searchScope = e.target.value; renderGrid(); };
     document.getElementById("pm-sort-select").onchange = (e) => { STATE.sortMode = e.target.value; renderGrid(); };
+    document.getElementById("pm-btn-jump-ping").onclick = () => {
+        // 在渲染队列中寻找被打上书签的项 (从独立的本地设置中读取)
+        const pings = STATE.localDB.settings?.pings || {};
+        const targetIdx = STATE._renderQueue.findIndex(q => pings[q.ctx] === q.item);
+        if (targetIdx === -1) return alert("当前视图中没有任何进度标记！\n请先在某张卡片底部点击【☆ 书签】。");
+        
+        // 如果目标卡片还未加载(在未滚动到的盲区)，强行提前将它渲染出来
+        if (targetIdx >= STATE._renderIndex) renderNextChunk(targetIdx + 60);
+        
+        // 等待DOM渲染后触发平滑滚动
+        setTimeout(() => {
+            const q = STATE._renderQueue[targetIdx];
+            const safeItem = encodeURIComponent(q.item);
+            const cardEl = document.querySelector(`.pm-selectable-card[data-ctx="${q.ctx}"][data-item="${safeItem}"]`);
+            if (cardEl) {
+                cardEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // 增加蓝色高亮闪烁特效，方便眼睛瞬间定位
+                cardEl.style.transition = 'box-shadow 0.3s';
+                cardEl.style.boxShadow = '0 0 30px 10px rgba(0,229,255,0.8)';
+                setTimeout(() => cardEl.style.boxShadow = '0 0 10px rgba(0,229,255,0.3)', 1500);
+            }
+        }, 100);
+    };
     document.getElementById("pm-zoom-slider").oninput = () => renderGrid();
 
     // 侧边栏各种按钮事件
@@ -1045,6 +1131,24 @@ window.exitBatchMode = function() {
     const bb = document.getElementById("pm-batch-bar"); if (bb) bb.classList.remove("active");
     const main = document.getElementById("pm-main"); if (main) main.classList.remove("batch-active");
     renderGrid();
+};
+
+window.PM_Global.ui.clearCloudCache = function() {
+    // 1. 清理插件运行时的图片懒加载内存标记
+    window.PM_Global._imgLoadedCache.clear();
+    
+    // 2. 尝试清理 Service Worker Cache (若浏览器支持)
+    if ('caches' in window) {
+        caches.keys().then(keys => {
+            keys.forEach(key => caches.delete(key));
+        }).catch(()=>{});
+    }
+    
+    // 3. 弹出详尽的硬件级清理教学
+    alert("✔️ 运行时的图片内存缓存已清空！\n\n【💡 彻底清理C盘硬盘缓存必读】\n为了实现拖拽秒开，云端图片均由您的浏览器底层接管并物理缓存在电脑硬盘中。网页插件无权直接删除硬件文件。\n\n如果您想彻底释放 C盘/浏览器 的空间，请按键盘快捷键 [Ctrl + Shift + Delete]，勾选【缓存的图片和文件】并清除即可。");
+    
+    // 刷新界面，未被浏览器硬件缓存的图会变回骨架屏
+    renderGrid(); 
 };
 
 // === 新增：强制突破缓存的独立云端更新逻辑 (已适配新型分包架构) ===
@@ -1421,6 +1525,10 @@ function renderGrid() {
     const main = document.getElementById("pm-main");
     const zoomSize = document.getElementById("pm-zoom-slider") ? document.getElementById("pm-zoom-slider").value : 180;
     
+    // 【核心修复】：记录刷新前的滚动条位置和已加载的卡片数量
+    const oldScrollTop = main.scrollTop || 0;
+    const oldRenderIndex = STATE._renderIndex ? Math.max(STATE._renderIndex, PM_RENDER_CHUNK_SIZE) : PM_RENDER_CHUNK_SIZE;
+    
     // 初始化 Grid 样式与基础元素
     main.style.gridTemplateColumns = `repeat(auto-fill, minmax(${zoomSize}px, 1fr))`;
 
@@ -1467,24 +1575,18 @@ function renderGrid() {
         return 0;
     });
 
-    // [核心重构 1]：不直接渲染，存入全局渲染队列
     STATE._renderQueue = allItems;
-    STATE._renderIndex = 0;
+    STATE._renderIndex = 0; // 重置渲染指针
+    main.innerHTML = '<div id="pm-marquee"></div>'; // 清空画布
 
-    // 清空画布并保留选框容器
-    main.innerHTML = '<div id="pm-marquee"></div>';
-
-    // 确保事件委托只绑定一次
     if (!main.dataset.delegated) {
         main.dataset.delegated = "true";
         main.addEventListener('click', handleGridClick);
     }
 
-    // [核心重构 2]：重置并初始化高级懒加载与触底监测的 Observer
     if (window._pmLazyObserver) window._pmLazyObserver.disconnect();
     if (window._pmScrollObserver) window._pmScrollObserver.disconnect();
 
-    // 突破并发限制：只加载进入视野的图片，稍微放大根边距预加载
     window._pmLazyObserver = new IntersectionObserver((entries, observer) => {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
@@ -1500,23 +1602,31 @@ function renderGrid() {
                         window.PM_Global._imgLoadedCache.add(cacheKey);
                     }
                 }
-                observer.unobserve(img); // 加载完立即解除监听，释放内存
+                observer.unobserve(img);
             }
         });
     }, { root: main, rootMargin: "300px" });
 
-    // 触发第一批渲染
-    renderNextChunk();
+    // 【核心修复】：一口气恢复之前加载过的所有层数
+    renderNextChunk(oldRenderIndex);
+
+    // 【核心修复】：将滚动条瞬间拉回之前的位置（等待下一帧DOM渲染完毕后执行）
+    requestAnimationFrame(() => {
+        main.scrollTop = oldScrollTop;
+    });
 }
 
-// [新增核心函数]：分片渲染器，每次只渲染固定数量，到底部再触发
-function renderNextChunk() {
+// 接收一个覆盖渲染数量的参数 overrideChunkSize
+function renderNextChunk(overrideChunkSize = null) {
     const main = document.getElementById("pm-main");
     const list = STATE._renderQueue;
     const startIdx = STATE._renderIndex;
-    const endIdx = Math.min(startIdx + PM_RENDER_CHUNK_SIZE, list.length);
+    
+    // 如果传入了覆盖值，就一次性渲染，否则按标准值 60 个递增
+    const step = overrideChunkSize !== null ? overrideChunkSize : PM_RENDER_CHUNK_SIZE;
+    const endIdx = Math.min(startIdx + step, list.length);
 
-    if (startIdx >= endIdx) return; // 全部渲染完毕
+    if (startIdx >= endIdx) return;
 
     let activePrompts = [];
     if (STATE.currentActiveWidget && STATE.currentActiveWidget.value) {
@@ -1525,7 +1635,6 @@ function renderNextChunk() {
 
     let htmlChunks = [];
 
-    // 仅针对当前切片的数据生成 DOM 字符串
     for (let i = startIdx; i < endIdx; i++) {
         const { item, ctx } = list[i];
         const imgKey = `${ctx}_${item}`;
@@ -1546,7 +1655,6 @@ function renderNextChunk() {
         const globalCtxForCard = localTargetModelId ? `${localTargetModelId}_global` : null;
         const inGrp = globalCtxForCard && STATE.localDB.contexts[globalCtxForCard]?.groups?.some(g => g.items.includes(item));
 
-        // 构建图片区域
         let imgWrapHtml = '';
         if (imgList.length > 0) {
             const firstImg = imgList[0];
@@ -1559,7 +1667,6 @@ function renderNextChunk() {
                     <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
                 `;
             } else {
-                // 【核心修复】：将致命的 [screenshot] 替换为安全的 Base64 透明占位图
                 imgWrapHtml = `
                     <img src="${PM_LAZY_PLACEHOLDER}" data-src="${safeFirstImg}" class="pm-action-target pm-custom-lazy" data-action="view-img" style="cursor:zoom-in;">
                     <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
@@ -1588,15 +1695,20 @@ function renderNextChunk() {
             sourceHtml = `<div class="pm-card-source">[${UTILS.escapeHTML(mName)}]</div>`;
         }
 
+        // 检查该卡片是否为当前分类的“进度标记” (从独立的本地设置中读取)
+        const pings = STATE.localDB.settings?.pings || {};
+        const isPing = (pings[ctx] === item);
+        const pingStyle = isPing ? 'border-color: #00e5ff; box-shadow: 0 0 10px rgba(0,229,255,0.3);' : '';
         const safeItem = encodeURIComponent(item);
 
         htmlChunks.push(`
-            <div class="${cardClasses}" data-ctx="${ctx}" data-item="${safeItem}">
+            <div class="${cardClasses}" data-ctx="${ctx}" data-item="${safeItem}" style="${pingStyle}">
                 <div class="pm-card-img-wrap" data-img-idx="0">${imgWrapHtml}</div>
                 <div class="pm-card-title">${UTILS.escapeHTML(item)}</div>
                 ${sourceHtml}
                 <div class="pm-card-tags">${tagsHtml}</div>
                 <div class="pm-card-actions">
+                    <button class="pm-text-btn pm-action-target" style="color:#00e5ff; border-color:#008b8b;" data-action="ping">${isPing ? "★ 取消" : "☆ 书签"}</button>
                     <button class="pm-text-btn pm-action-target ${inGrp ? 'warning' : ''}" data-action="fav">${inGrp ? "已收藏" : "收藏"}</button>
                     <button class="pm-text-btn pm-action-target" data-action="upload">上传</button>
                     <button class="pm-text-btn pm-action-target" data-action="edit">编辑</button>
@@ -1606,18 +1718,15 @@ function renderNextChunk() {
         `);
     }
 
-    // 增量添加到 DOM 中，而非替换
     main.insertAdjacentHTML('beforeend', htmlChunks.join(''));
 
-    // 为新增的懒加载图片绑定观察者
     main.querySelectorAll('.pm-custom-lazy:not([data-observed])').forEach(img => {
-        img.dataset.observed = "true"; // 标记已绑定，防止重复绑定
+        img.dataset.observed = "true";
         window._pmLazyObserver.observe(img);
     });
 
     STATE._renderIndex = endIdx;
 
-    // 如果还没渲染完，在底部插入一个“触底探针”，碰到就继续加载下一页
     if (endIdx < list.length) {
         const triggerId = `pm-scroll-trigger`;
         main.insertAdjacentHTML('beforeend', `<div id="${triggerId}" style="grid-column: 1/-1; height: 10px;"></div>`);
@@ -1625,11 +1734,11 @@ function renderNextChunk() {
 
         window._pmScrollObserver = new IntersectionObserver((entries) => {
             if (entries[0].isIntersecting) {
-                window._pmScrollObserver.disconnect(); // 碰到探针后立刻销毁探针
+                window._pmScrollObserver.disconnect();
                 triggerEl.remove();
-                renderNextChunk(); // 递归加载下一批
+                renderNextChunk(); // 正常滚动依然按 60 个递增
             }
-        }, { root: main, rootMargin: "400px" }); // 距离底部 400px 时提前触发，无缝加载
+        }, { root: main, rootMargin: "400px" });
 
         window._pmScrollObserver.observe(triggerEl);
     }
@@ -1683,6 +1792,13 @@ if (action === 'view-img' && !STATE.isBatchMode) {
             window.openEditCardModal(item, ctx);
         } else if (action === 'delete') {
             if (confirm(`彻底删除 [ ${item} ]？`)) await deleteCardDirect(item, ctx);
+        } else if (action === 'ping') {
+            // 将书签独立存储在本地设置中，绝不被云端覆盖
+            if (!STATE.localDB.settings) STATE.localDB.settings = {};
+            if (!STATE.localDB.settings.pings) STATE.localDB.settings.pings = {};
+            STATE.localDB.settings.pings[ctx] = (STATE.localDB.settings.pings[ctx] === item) ? null : item;
+            await PromptAPI.saveDB(STATE.localDB);
+            renderGrid();
         }
         return; // 处理完按钮事件后退出，不再触发外层卡片逻辑
     }
