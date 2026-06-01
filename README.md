@@ -2,7 +2,7 @@
 **一个用于浏览与管理画师串、各种 Prompt 预设的极简小插件**
 
 > 📢 **参与社区共建 / 提交画师库：**  
-> 本插件已接入云端公共图库模式！如果您整理了优质的画师风格或 Prompt 预设，欢迎前往数据仓库 👉 [ComfyUI-Prompt-CloudDB](https://modelscope.cn/datasets/FengRuoL/ComfyUI-Prompt-CloudDB/feedback) 提交您的图库。审核通过后将同步给全网用户！
+> 本插件已接入云端公共图库模式！如果您整理了优质的画师风格或 Prompt 预设，欢迎前往数据仓库 👉 [ComfyUI-Prompt-CloudDB](https://modelscope.cn/datasets/FengRuoL/ComfyUI-Prompt-CloudDB/feedback) 提交您的Issue和整理出的文件。审核通过后将同步给全网用户！
 
 ---
 
