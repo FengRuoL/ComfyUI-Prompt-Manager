@@ -1411,6 +1411,12 @@ function renderSidebar() {
 /* =====================================================================
  * UI 模块 4：高性能视图渲染 (Virtual Templating & Event Delegation)
  * ===================================================================== */
+
+// [新增核心配置]：上万张图片基准下的分片渲染配置
+const PM_RENDER_CHUNK_SIZE = 60; // 每次滑到底部加载的数量
+// 极简透明 1x1 GIF 占位符，彻底杜绝 [screenshot] 引起的网络请求阻塞
+const PM_LAZY_PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
 function renderGrid() {
     const main = document.getElementById("pm-main");
     const zoomSize = document.getElementById("pm-zoom-slider") ? document.getElementById("pm-zoom-slider").value : 180;
@@ -1461,15 +1467,67 @@ function renderGrid() {
         return 0;
     });
 
+    // [核心重构 1]：不直接渲染，存入全局渲染队列
+    STATE._renderQueue = allItems;
+    STATE._renderIndex = 0;
+
+    // 清空画布并保留选框容器
+    main.innerHTML = '<div id="pm-marquee"></div>';
+
+    // 确保事件委托只绑定一次
+    if (!main.dataset.delegated) {
+        main.dataset.delegated = "true";
+        main.addEventListener('click', handleGridClick);
+    }
+
+    // [核心重构 2]：重置并初始化高级懒加载与触底监测的 Observer
+    if (window._pmLazyObserver) window._pmLazyObserver.disconnect();
+    if (window._pmScrollObserver) window._pmScrollObserver.disconnect();
+
+    // 突破并发限制：只加载进入视野的图片，稍微放大根边距预加载
+    window._pmLazyObserver = new IntersectionObserver((entries, observer) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const img = entry.target;
+                if (img.dataset.src) {
+                    img.src = img.dataset.src;
+                    img.removeAttribute('data-src');
+                    img.classList.remove('pm-custom-lazy');
+                    
+                    const card = img.closest('.pm-selectable-card');
+                    if (card) {
+                        const cacheKey = `${card.dataset.ctx}_${decodeURIComponent(card.dataset.item)}`;
+                        window.PM_Global._imgLoadedCache.add(cacheKey);
+                    }
+                }
+                observer.unobserve(img); // 加载完立即解除监听，释放内存
+            }
+        });
+    }, { root: main, rootMargin: "300px" });
+
+    // 触发第一批渲染
+    renderNextChunk();
+}
+
+// [新增核心函数]：分片渲染器，每次只渲染固定数量，到底部再触发
+function renderNextChunk() {
+    const main = document.getElementById("pm-main");
+    const list = STATE._renderQueue;
+    const startIdx = STATE._renderIndex;
+    const endIdx = Math.min(startIdx + PM_RENDER_CHUNK_SIZE, list.length);
+
+    if (startIdx >= endIdx) return; // 全部渲染完毕
+
     let activePrompts = [];
     if (STATE.currentActiveWidget && STATE.currentActiveWidget.value) {
         activePrompts = UTILS.parsePromptText(STATE.currentActiveWidget.value).map(p => p.tag);
     }
 
-    // [核心优化]：使用大块 HTML 模板字符串，彻底消除逐个创建 DOM 节点的性能损耗
-    let htmlChunks = ['<div id="pm-marquee"></div>'];
+    let htmlChunks = [];
 
-    allItems.forEach(({ item, ctx }) => {
+    // 仅针对当前切片的数据生成 DOM 字符串
+    for (let i = startIdx; i < endIdx; i++) {
+        const { item, ctx } = list[i];
         const imgKey = `${ctx}_${item}`;
         const imgList = STATE.localDB.images?.[imgKey] || [];
         const isSelectedInBatch = STATE.batchSelection.has(`${ctx}||${item}`);
@@ -1479,39 +1537,31 @@ function renderGrid() {
         if (STATE.isBatchMode && isSelectedInBatch) cardClasses += " batch-selected";
         else if (!STATE.isBatchMode && isInWidget) cardClasses += " in-prompt";
 
-        // 获取真实的 sourceModelId 判断收藏状态
         let sourceModelId = ctx.split('_')[0];
         for (const key of Object.keys(STATE.localDB.models.main_models)) {
             if (ctx.startsWith(key + '_')) { sourceModelId = key; break; }
         }
         
-        let localTargetModelId = null;
-        if (sourceModelId.startsWith('cloud_')) {
-            // 云端卡片直接去它的专属隐形收藏库找状态
-            localTargetModelId = "fav_" + sourceModelId;
-        } else {
-            // 本地卡片就用自己
-            localTargetModelId = sourceModelId;
-        }
-        
+        let localTargetModelId = sourceModelId.startsWith('cloud_') ? "fav_" + sourceModelId : sourceModelId;
         const globalCtxForCard = localTargetModelId ? `${localTargetModelId}_global` : null;
         const inGrp = globalCtxForCard && STATE.localDB.contexts[globalCtxForCard]?.groups?.some(g => g.items.includes(item));
 
-        // 1. 构建图片区域 HTML
+        // 构建图片区域
         let imgWrapHtml = '';
-if (imgList.length > 0) {
+        if (imgList.length > 0) {
             const firstImg = imgList[0];
             const safeFirstImg = UTILS.escapeHTML(firstImg);
             const isCached = window.PM_Global._imgLoadedCache.has(imgKey);
-            // 缓存命中的图直接设 src（浏览器HTTP缓存秒出），未缓存的走懒加载
+            
             if (isCached) {
                 imgWrapHtml = `
                     <img src="${safeFirstImg}" class="pm-action-target" data-action="view-img" style="cursor:zoom-in;">
                     <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
                 `;
             } else {
+                // 【核心修复】：将致命的 [screenshot] 替换为安全的 Base64 透明占位图
                 imgWrapHtml = `
-                    <img src="[screenshot]" data-src="${safeFirstImg}" class="pm-action-target pm-custom-lazy" data-action="view-img" style="cursor:zoom-in;">
+                    <img src="${PM_LAZY_PLACEHOLDER}" data-src="${safeFirstImg}" class="pm-action-target pm-custom-lazy" data-action="view-img" style="cursor:zoom-in;">
                     <button class="pm-del-img-btn pm-action-target" data-action="del-img" title="删除当前图片">×</button>
                 `;
             }
@@ -1525,13 +1575,11 @@ if (imgList.length > 0) {
             imgWrapHtml = `<div class="pm-no-img">无图 (点上传)</div>`;
         }
 
-        // 2. 构建标签区域 HTML
         const tags = STATE.localDB.contexts[ctx]?.metadata?.[item]?.tags || [];
         let tagsHtml = tags.length === 0 
             ? '<span style="color:#555; font-style:italic;">暂无标签</span>'
             : tags.map(t => `<span class="pm-tag">${UTILS.escapeHTML(t)}</span>`).join('');
 
-        // 3. 构建来源显示 HTML
         let sourceHtml = '';
         if (STATE.searchScope !== "mode") {
             const prefix = STATE.currentModelId + "_";
@@ -1540,7 +1588,6 @@ if (imgList.length > 0) {
             sourceHtml = `<div class="pm-card-source">[${UTILS.escapeHTML(mName)}]</div>`;
         }
 
-        // 注入安全字符转义，防止名字中有双引号破坏 HTML 结构
         const safeItem = encodeURIComponent(item);
 
         htmlChunks.push(`
@@ -1557,50 +1604,35 @@ if (imgList.length > 0) {
                 </div>
             </div>
         `);
-    });
-
-    // 一次性渲染到页面中 (避免无数次重排回流)
-    main.innerHTML = htmlChunks.join('');
-    
-    // [核心优化]：绑定唯一的事件委托监听器 (代替原来每个卡片绑定 5 个 onClick 的灾难设计)
-    if (!main.dataset.delegated) {
-        main.dataset.delegated = "true";
-        main.addEventListener('click', handleGridClick);
     }
 
-// === 懒加载 + 加载状态缓存 ===
-    // 原理：滑到图片时才加载，触发加载后标记到全局缓存 Set，
-    // 切换分类时 DOM 重建但缓存不丢，下次 renderGrid 时缓存命中的图直接设 src（浏览器HTTP缓存秒出）
-    if (window._pmLazyObserver) {
-        window._pmLazyObserver.disconnect();
-    }
-    window._pmLazyObserver = new IntersectionObserver((entries, observer) => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                const img = entry.target;
-                if (img.dataset.src) {
-                    img.src = img.dataset.src;
-                    img.removeAttribute('data-src');
-                    img.classList.remove('pm-custom-lazy');
-                }
-                // 标记此卡片图片已触发加载，写入全局缓存（跨分类持久，关闭页面自动清除）
-                const card = img.closest('.pm-selectable-card');
-                if (card) {
-                    const cacheKey = `${card.dataset.ctx}_${decodeURIComponent(card.dataset.item)}`;
-                    window.PM_Global._imgLoadedCache.add(cacheKey);
-                }
-                observer.unobserve(img);
-            }
-        });
-    }, {
-        root: main,
-        rootMargin: "300px"
-    });
+    // 增量添加到 DOM 中，而非替换
+    main.insertAdjacentHTML('beforeend', htmlChunks.join(''));
 
-    // 只为未缓存的懒加载图片注册观察
-    main.querySelectorAll('.pm-custom-lazy').forEach(img => {
+    // 为新增的懒加载图片绑定观察者
+    main.querySelectorAll('.pm-custom-lazy:not([data-observed])').forEach(img => {
+        img.dataset.observed = "true"; // 标记已绑定，防止重复绑定
         window._pmLazyObserver.observe(img);
     });
+
+    STATE._renderIndex = endIdx;
+
+    // 如果还没渲染完，在底部插入一个“触底探针”，碰到就继续加载下一页
+    if (endIdx < list.length) {
+        const triggerId = `pm-scroll-trigger`;
+        main.insertAdjacentHTML('beforeend', `<div id="${triggerId}" style="grid-column: 1/-1; height: 10px;"></div>`);
+        const triggerEl = document.getElementById(triggerId);
+
+        window._pmScrollObserver = new IntersectionObserver((entries) => {
+            if (entries[0].isIntersecting) {
+                window._pmScrollObserver.disconnect(); // 碰到探针后立刻销毁探针
+                triggerEl.remove();
+                renderNextChunk(); // 递归加载下一批
+            }
+        }, { root: main, rootMargin: "400px" }); // 距离底部 400px 时提前触发，无缝加载
+
+        window._pmScrollObserver.observe(triggerEl);
+    }
 }
 
 /* =====================================================================
