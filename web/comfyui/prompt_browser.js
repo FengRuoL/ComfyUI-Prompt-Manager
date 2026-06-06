@@ -1174,8 +1174,8 @@ window.PM_Global.ui.forceUpdateCloud = async function() {
     try {
         const GH_REPO = "FengRuoL/ComfyUI-Prompt-CloudDB";
         const GH_BRANCH = "main";
-        const CLOUD_JSON_URL = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${GH_BRANCH}/`;
-        const CLOUD_IMG_BASE = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${GH_BRANCH}/data/`;
+        const CLOUD_JSON_URL = `https://v6.gh-proxy.org/https://github.com/${GH_REPO}/blob/${GH_BRANCH}/`;
+        const CLOUD_IMG_BASE = `https://v6.gh-proxy.org/https://github.com/${GH_REPO}/blob/${GH_BRANCH}/data/`;
         const t = Date.now(); 
         
         // 1. 获取基础架构 system.json

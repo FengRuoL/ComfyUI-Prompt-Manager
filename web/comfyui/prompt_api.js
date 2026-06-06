@@ -12,8 +12,8 @@ const GH_REPO = "FengRuoL/ComfyUI-Prompt-CloudDB";
 const GH_BRANCH = "main";
 
 // jsDelivr 统一加速通道，JSON 和图片都可以走这里！
-const CLOUD_JSON_URL = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${GH_BRANCH}/`;
-const CLOUD_IMG_BASE = `https://cdn.jsdelivr.net/gh/${GH_REPO}@${GH_BRANCH}/data/`;
+const CLOUD_JSON_URL = `https://v6.gh-proxy.org/https://github.com/${GH_REPO}/blob/${GH_BRANCH}/`;
+const CLOUD_IMG_BASE = `https://v6.gh-proxy.org/https://github.com/${GH_REPO}/blob/${GH_BRANCH}/data/`;
 
 export const PromptAPI = {
     async getDB() {
