@@ -179,9 +179,21 @@ class PromptBrowserNode:
 
 class PromptViewerNode:
     @classmethod
-    def INPUT_TYPES(cls): return {"required": {"prompt字符串": ("STRING", {"forceInput": True})}, "optional": {"组合预览图": ("IMAGE", )}}
+    def INPUT_TYPES(cls): 
+        return {
+            "required": {}, 
+            "optional": {
+                "prompt字符串": ("STRING", {"forceInput": True}), 
+                "组合预览图": ("IMAGE", )
+            }
+        }
     RETURN_TYPES = ("STRING",); RETURN_NAMES = ("prompt字符串",); FUNCTION = "view"; OUTPUT_NODE = True; CATEGORY = "Prompt Manager"
-    def view(self, prompt字符串, 组合预览图=None): return {"ui": {"text": [prompt字符串]}, "result": (prompt字符串,)}
+    
+    def view(self, prompt字符串="", 组合预览图=None): 
+        # 保护机制：如果没有连线，默认为空字符串避免报错
+        if prompt字符串 is None: 
+            prompt字符串 = ""
+        return {"ui": {"text": [prompt字符串]}, "result": (prompt字符串,)}
 
 class PromptImportNode:
     @classmethod
