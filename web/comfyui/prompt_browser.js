@@ -1734,11 +1734,11 @@ function renderNextChunk(overrideChunkSize = null) {
                 ${sourceHtml}
                 <div class="pm-card-tags">${tagsHtml}</div>
                 <div class="pm-card-actions">
-                    <button class="pm-text-btn pm-action-target" style="color:#00e5ff; border-color:#008b8b;" data-action="ping">${isPing ? "★ 取消" : "☆ 书签"}</button>
                     <button class="pm-text-btn pm-action-target ${inGrp ? 'warning' : ''}" data-action="fav">${inGrp ? "已收藏" : "收藏"}</button>
                     <button class="pm-text-btn pm-action-target" data-action="upload">上传</button>
                     <button class="pm-text-btn pm-action-target" data-action="edit">编辑</button>
                     <button class="pm-text-btn danger pm-action-target" data-action="delete">删除</button>
+                    <button class="pm-text-btn pm-action-target" style="color:#00e5ff; border-color:#008b8b;" data-action="ping">${isPing ? "★ 取消" : "☆ 书签"}</button>
                 </div>
             </div>
         `);
