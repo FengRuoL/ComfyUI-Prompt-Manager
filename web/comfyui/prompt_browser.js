@@ -773,7 +773,73 @@ function buildAllModals() {
     `;
     document.body.appendChild(backupModal);
 
-// 【核心增强】：替换为支持缩放和拖拽的高级预览器
+// ==========================================
+    // 注入：前端图像加密解密核心算法 (Hilbert 曲线)
+    // ==========================================
+    if (!window.PM_Global.utils.gilbert2d) {
+        window.PM_Global.utils.generate2d = function(x, y, ax, ay, bx, by, coordinates) {
+            const w = Math.abs(ax + ay), h = Math.abs(bx + by);
+            const dax = Math.sign(ax), day = Math.sign(ay);
+            const dbx = Math.sign(bx), dby = Math.sign(by);
+            if (h === 1) { for (let i = 0; i < w; i++) { coordinates.push([x, y]); x += dax; y += day; } return; }
+            if (w === 1) { for (let i = 0; i < h; i++) { coordinates.push([x, y]); x += dbx; y += dby; } return; }
+            let ax2 = Math.floor(ax / 2), ay2 = Math.floor(ay / 2), bx2 = Math.floor(bx / 2), by2 = Math.floor(by / 2);
+            const w2 = Math.abs(ax2 + ay2), h2 = Math.abs(bx2 + by2);
+            if (2 * w > 3 * h) {
+                if ((w2 % 2) && (w > 2)) { ax2 += dax; ay2 += day; }
+                window.PM_Global.utils.generate2d(x, y, ax2, ay2, bx, by, coordinates);
+                window.PM_Global.utils.generate2d(x + ax2, y + ay2, ax - ax2, ay - ay2, bx, by, coordinates);
+            } else {
+                if ((h2 % 2) && (h > 2)) { bx2 += dbx; by2 += dby; }
+                window.PM_Global.utils.generate2d(x, y, bx2, by2, ax2, ay2, coordinates);
+                window.PM_Global.utils.generate2d(x + bx2, y + by2, ax, ay, bx - bx2, by - by2, coordinates);
+                window.PM_Global.utils.generate2d(x + (ax - dax) + (bx2 - dbx), y + (ay - day) + (by2 - dby), -bx2, -by2, -(ax - ax2), -(ay - ay2), coordinates);
+            }
+        };
+
+        window.PM_Global.utils.gilbert2d = function(width, height) {
+            const coordinates = [];
+            if (width >= height) window.PM_Global.utils.generate2d(0, 0, width, 0, 0, height, coordinates);
+            else window.PM_Global.utils.generate2d(0, 0, 0, height, width, 0, coordinates);
+            return coordinates;
+        };
+
+        window.PM_Global.utils.processImageCrypto = async function(imgSrc, mode) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.crossOrigin = "Anonymous"; // 解决跨域读取像素问题
+                img.onload = () => {
+                    try {
+                        const cvs = document.createElement("canvas");
+                        const width = cvs.width = img.width, height = cvs.height = img.height;
+                        const ctx = cvs.getContext("2d");
+                        ctx.drawImage(img, 0, 0);
+                        const imgdata = ctx.getImageData(0, 0, width, height);
+                        const imgdata2 = new ImageData(width, height);
+                        
+                        const curve = window.PM_Global.utils.gilbert2d(width, height);
+                        const offset = Math.round((Math.sqrt(5) - 1) / 2 * width * height);
+                        
+                        for(let i = 0; i < width * height; i++){
+                            const old_pos = curve[i];
+                            const new_pos = curve[(i + offset) % (width * height)];
+                            const old_p = 4 * (old_pos[0] + old_pos[1] * width);
+                            const new_p = 4 * (new_pos[0] + new_pos[1] * width);
+                            if (mode === 'encrypt') imgdata2.data.set(imgdata.data.slice(old_p, old_p + 4), new_p);
+                            else imgdata2.data.set(imgdata.data.slice(new_p, new_p + 4), old_p);
+                        }
+                        ctx.putImageData(imgdata2, 0, 0);
+                        // 强制输出为 PNG 保证无损，否则混淆会被 JPEG 压缩损毁
+                        resolve(cvs.toDataURL("image/png")); 
+                    } catch (e) { reject(e); }
+                };
+                img.onerror = () => reject(new Error("图片加载失败"));
+                img.src = imgSrc;
+            });
+        };
+    }
+
+    // 【核心增强】：高级预览器与工具栏
     const imgViewer = document.createElement("div"); 
     imgViewer.id = "pm-image-viewer"; 
     imgViewer.className = "pm-modal-overlay"; 
@@ -781,6 +847,13 @@ function buildAllModals() {
     imgViewer.innerHTML = `
         <div id="pm-viewer-close" style="position:absolute; top:20px; right:30px; color:#fff; font-size:40px; cursor:pointer; z-index:20006; font-weight:bold; text-shadow: 0 2px 6px rgba(0,0,0,0.8); transition:0.2s;">×</div>
         <img id="pm-viewer-img" src="" style="transition: transform 0.05s linear; cursor: grab; max-width: 90%; max-height: 90%; object-fit: contain;">
+        
+        <!-- 新增加密解密工具栏 -->
+        <div style="position:absolute; bottom:30px; left:50%; transform:translateX(-50%); display:flex; gap:15px; z-index:20006; background: rgba(0,0,0,0.7); padding: 10px 20px; border-radius: 12px; backdrop-filter: blur(4px);">
+            <button class="pm-action-btn primary" id="pm-btn-dl-raw" style="border:none; box-shadow:0 4px 10px rgba(0,0,0,0.5); padding: 8px 15px; font-weight:bold;">原图下载</button>
+            <button class="pm-action-btn" id="pm-btn-dl-enc" style="background:#534383; color:#fff; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.5); padding: 8px 15px; font-weight:bold;">混淆并下载 (防屏蔽)</button>
+            <button class="pm-action-btn" id="pm-btn-dl-dec" style="background:#1e3e1e; color:#fff; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.5); padding: 8px 15px; font-weight:bold;">网页端解密显示</button>
+        </div>
     `; 
     document.body.appendChild(imgViewer); 
 
@@ -789,11 +862,62 @@ function buildAllModals() {
     const vImg = document.getElementById("pm-viewer-img");
     const vClose = document.getElementById("pm-viewer-close");
 
+    const btnDlRaw = document.getElementById("pm-btn-dl-raw");
+    const btnDlEnc = document.getElementById("pm-btn-dl-enc");
+    const btnDlDec = document.getElementById("pm-btn-dl-dec");
+
+    // 下载辅助函数
+    const downloadDataUrl = (dataUrl, filename) => {
+        const a = document.createElement("a");
+        a.href = dataUrl; a.download = filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    };
+
+    // 原图下载
+    btnDlRaw.onclick = (e) => {
+        e.stopPropagation();
+        fetch(vImg.src).then(res => res.blob()).then(blob => {
+            const url = URL.createObjectURL(blob);
+            downloadDataUrl(url, `RawImage_${Date.now()}.png`);
+            URL.revokeObjectURL(url);
+        }).catch(() => downloadDataUrl(vImg.src, `RawImage_${Date.now()}.png`));
+    };
+
+    // 加密并下载
+    btnDlEnc.onclick = async (e) => {
+        e.stopPropagation();
+        const oldText = btnDlEnc.innerText;
+        btnDlEnc.innerText = "处理中...";
+        try {
+            const encDataUrl = await window.PM_Global.utils.processImageCrypto(vImg.src, 'encrypt');
+            downloadDataUrl(encDataUrl, `Encrypted_Bypass_${Date.now()}.png`);
+            btnDlEnc.innerText = "混淆完成并下载";
+        } catch(err) {
+            alert("混淆失败，请按 F12 检查网络报错。");
+        }
+        setTimeout(() => btnDlEnc.innerText = oldText, 2000);
+    };
+
+    // 网页端解密预览
+    btnDlDec.onclick = async (e) => {
+        e.stopPropagation();
+        const oldText = btnDlDec.innerText;
+        btnDlDec.innerText = "解码中...";
+        try {
+            const decDataUrl = await window.PM_Global.utils.processImageCrypto(vImg.src, 'decrypt');
+            vImg.src = decDataUrl; // 瞬间在网页上替换为解密图
+            btnDlDec.innerText = "解码成功";
+        } catch(err) {
+            alert("解码失败！请确认该图是否为被压缩过的格式(JPEG)，混淆图必须无损保存才能解码。");
+        }
+        setTimeout(() => btnDlDec.innerText = oldText, 2000);
+    };
+
     vClose.onclick = () => window.pmHideModal("pm-image-viewer");
     vClose.onmouseover = () => vClose.style.color = "#ff6b9d";
     vClose.onmouseout = () => vClose.style.color = "#fff";
 
-    // 点到黑色背景处关闭（如果点到了图片本身，则不关闭，留给拖拽使用）
+    // 点到黑色背景处关闭，防止点到工具栏关闭
     imgViewer.onpointerdown = (e) => {
         if (e.target === imgViewer) window.pmHideModal("pm-image-viewer");
     };
@@ -810,11 +934,10 @@ function buildAllModals() {
 
     // 滚轮缩放逻辑
     imgViewer.addEventListener("wheel", (e) => {
-        e.preventDefault(); // 阻止网页默认滚动
+        e.preventDefault(); 
         const zoomIntensity = 0.15;
-        // 向上滚放大，向下滚缩小
         vScale *= (e.deltaY < 0) ? (1 + zoomIntensity) : (1 - zoomIntensity);
-        vScale = Math.max(0.1, Math.min(vScale, 15)); // 限制缩放 0.1倍 ~ 15倍
+        vScale = Math.max(0.1, Math.min(vScale, 15)); 
         vImg.style.transform = `translate(${vTx}px, ${vTy}px) scale(${vScale})`;
     }, {passive: false});
 
@@ -824,7 +947,7 @@ function buildAllModals() {
         isVDragging = true;
         vStartX = e.clientX - vTx; 
         vStartY = e.clientY - vTy;
-        vImg.style.cursor = "grabbing"; // 抓取中的小手图标
+        vImg.style.cursor = "grabbing"; 
     });
     window.addEventListener("pointermove", (e) => {
         if (!isVDragging) return;

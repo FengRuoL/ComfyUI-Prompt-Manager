@@ -10,6 +10,7 @@ import json
 import torch
 import numpy as np
 from PIL import Image
+import math
 import base64
 import time
 import zipfile
@@ -613,6 +614,108 @@ class PromptLocalFolderImporterNode:
         return (result_msg,)
 
 # ==========================================
+# 节点 9：Hilbert 曲线图像混淆/解密节点 (防屏蔽)
+# ==========================================
+class ImageHilbertCryptoNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "mode": (["加密混淆 (Encrypt)", "还原解密 (Decrypt)"], {"default": "加密混淆 (Encrypt)"}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "process"
+    CATEGORY = "Prompt Manager"
+
+    def gilbert2d(self, width, height):
+        """Python版 gilbert2d 空间填充曲线坐标生成算法"""
+        coordinates = []
+
+        def generate2d(x, y, ax, ay, bx, by):
+            w = abs(ax + ay)
+            h = abs(bx + by)
+
+            dax = 1 if ax > 0 else (-1 if ax < 0 else 0)
+            day = 1 if ay > 0 else (-1 if ay < 0 else 0)
+            dbx = 1 if bx > 0 else (-1 if bx < 0 else 0)
+            dby = 1 if by > 0 else (-1 if by < 0 else 0)
+
+            if h == 1:
+                for _ in range(w):
+                    coordinates.append((x, y))
+                    x += dax
+                    y += day
+                return
+            if w == 1:
+                for _ in range(h):
+                    coordinates.append((x, y))
+                    x += dbx
+                    y += dby
+                return
+            
+            ax2, ay2 = ax // 2, ay // 2
+            bx2, by2 = bx // 2, by // 2
+
+            w2 = abs(ax2 + ay2)
+            h2 = abs(bx2 + by2)
+
+            if 2 * w > 3 * h:
+                if (w2 % 2) and (w > 2):
+                    ax2 += dax
+                    ay2 += day
+                generate2d(x, y, ax2, ay2, bx, by)
+                generate2d(x + ax2, y + ay2, ax - ax2, ay - ay2, bx, by)
+            else:
+                if (h2 % 2) and (h > 2):
+                    bx2 += dbx
+                    by2 += dby
+                generate2d(x, y, bx2, by2, ax2, ay2)
+                generate2d(x + bx2, y + by2, ax, ay, bx - bx2, by - by2)
+                generate2d(x + (ax - dax) + (bx2 - dbx), y + (ay - day) + (by2 - dby),
+                           -bx2, -by2, -(ax - ax2), -(ay - ay2))
+
+        if width >= height:
+            generate2d(0, 0, width, 0, 0, height)
+        else:
+            generate2d(0, 0, 0, height, width, 0)
+        return coordinates
+
+    def process(self, image, mode):
+        # image shape: [Batch, Height, Width, Channels]
+        B, H, W, C = image.shape
+        
+        # 1. 获取曲线坐标
+        curve = self.gilbert2d(W, H)
+        
+        # 2. 计算黄金分割比偏移量 (和 JS 源码完全一致，保证加解密互通)
+        offset = round((math.sqrt(5) - 1) / 2 * W * H)
+        
+        # 3. 将 (x, y) 转换为 1D 展平索引，并转为 PyTorch Tensor 以进行 GPU 加速
+        old_indices = torch.tensor([y * W + x for x, y in curve], dtype=torch.long, device=image.device)
+        new_indices = torch.roll(old_indices, shifts=-offset)
+        
+        out_image = torch.zeros_like(image)
+        
+        # 4. 执行像素搬运 (支持 Batch)
+        for b in range(B):
+            img_flat = image[b].view(-1, C) # 展平为 [H*W, C]
+            out_flat = torch.zeros_like(img_flat)
+            
+            if "加密" in mode:
+                out_flat[new_indices] = img_flat[old_indices]
+            else:
+                out_flat[old_indices] = img_flat[new_indices]
+                
+            out_image[b] = out_flat.view(H, W, C)
+            
+        return (out_image,)
+
+
+# ==========================================
 # 路由映射
 # ==========================================
 @server.PromptServer.instance.routes.get("/prompt_data/{path:.*}")
@@ -767,7 +870,8 @@ NODE_CLASS_MAPPINGS = {
     "PromptGroupRandomizerNode": PromptGroupRandomizerNode,
     "PromptBatchReaderNode": PromptBatchReaderNode,
     "PromptDatasetImporterNode": PromptDatasetImporterNode,
-    "PromptLocalFolderImporterNode": PromptLocalFolderImporterNode # <--- 新增这行
+    "PromptLocalFolderImporterNode": PromptLocalFolderImporterNode,
+    "ImageHilbertCryptoNode": ImageHilbertCryptoNode
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptBrowserNode": "Prompt浏览器", 
@@ -777,5 +881,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptGroupRandomizerNode": "Prompt收藏夹盲盒",
     "PromptBatchReaderNode": "Prompt批量读取",
     "PromptDatasetImporterNode": "Prompt本地数据集导入",
-    "PromptLocalFolderImporterNode": "Prompt本地文件夹导入(打标格式)" # <--- 新增这行，给用户看的中文名
+    "PromptLocalFolderImporterNode": "Prompt本地文件夹导入(打标格式)",
+    "ImageHilbertCryptoNode": "防屏蔽图像混淆/解密"
 }
